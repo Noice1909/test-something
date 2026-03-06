@@ -1,0 +1,12 @@
+.env
+data/checkpoints/
+__pycache__/
+*.pyc
+.chroma/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.claude/*
+data/*

@@ -1,0 +1,143 @@
+# Neo4j NL Agent — Few-Shot Examples
+#
+# These examples teach the LLM correct Cypher patterns.
+# The agent uses vector similarity to find the most relevant examples
+# for each incoming question and injects them into the LLM prompt.
+
+examples:
+  # ── SIMPLE LOOKUPS ──────────────────────────────
+
+  - question: "Who is Alice Chen?"
+    cypher: |
+      MATCH (p:Person)
+      WHERE toLower(p.name) CONTAINS toLower("Alice Chen")
+      RETURN p.name AS name, p.title AS title, p.email AS email, p.hire_year AS hire_year
+      LIMIT 25
+
+  - question: "Tell me about the Engineering department"
+    cypher: |
+      MATCH (d:Department)
+      WHERE toLower(d.name) CONTAINS toLower("Engineering")
+      RETURN d.name AS department, d.budget AS budget, d.floor AS floor
+      LIMIT 25
+
+  - question: "Show me all projects"
+    cypher: |
+      MATCH (p:Project)
+      RETURN p.name AS project, p.status AS status, p.start_year AS start_year
+      LIMIT 25
+
+  # ── RELATIONSHIP TRAVERSAL ─────────────────────
+
+  - question: "What department does Bob Martinez work in?"
+    cypher: |
+      MATCH (p:Person)-[:WORKS_IN]->(d:Department)
+      WHERE toLower(p.name) CONTAINS toLower("Bob Martinez")
+      RETURN p.name AS person, d.name AS department
+      LIMIT 25
+
+  - question: "What skills does Eva Rossi have?"
+    cypher: |
+      MATCH (p:Person)-[:HAS_SKILL]->(s:Skill)
+      WHERE toLower(p.name) CONTAINS toLower("Eva Rossi")
+      RETURN p.name AS person, s.name AS skill, s.category AS category
+      LIMIT 25
+
+  - question: "What projects is David Kim working on?"
+    cypher: |
+      MATCH (p:Person)-[:WORKS_ON]->(proj:Project)
+      WHERE toLower(p.name) CONTAINS toLower("David Kim")
+      RETURN p.name AS person, proj.name AS project, proj.status AS status
+      LIMIT 25
+
+  # ── AGGREGATION ────────────────────────────────
+
+  - question: "How many people work in Engineering?"
+    cypher: |
+      MATCH (p:Person)-[:WORKS_IN]->(d:Department)
+      WHERE toLower(d.name) CONTAINS toLower("Engineering")
+      RETURN d.name AS department, count(p) AS employee_count
+
+  - question: "How many projects are there?"
+    cypher: |
+      MATCH (p:Project)
+      RETURN count(p) AS total
+
+  - question: "What is the total budget across all departments?"
+    cypher: |
+      MATCH (d:Department)
+      RETURN sum(d.budget) AS total_budget
+
+  # ── MULTI-HOP TRAVERSAL ───────────────────────
+
+  - question: "What projects does the Engineering department own?"
+    cypher: |
+      MATCH (proj:Project)-[:OWNED_BY]->(d:Department)
+      WHERE toLower(d.name) CONTAINS toLower("Engineering")
+      RETURN proj.name AS project, proj.status AS status, d.name AS department
+      LIMIT 25
+
+  - question: "Which people work on projects owned by the Product department?"
+    cypher: |
+      MATCH (p:Person)-[:WORKS_ON]->(proj:Project)-[:OWNED_BY]->(d:Department)
+      WHERE toLower(d.name) CONTAINS toLower("Product")
+      RETURN p.name AS person, proj.name AS project, d.name AS department
+      LIMIT 25
+
+  # ── REVERSE TRAVERSAL ─────────────────────────
+
+  - question: "Who manages the Engineering department?"
+    cypher: |
+      MATCH (p:Person)-[:MANAGES]->(d:Department)
+      WHERE toLower(d.name) CONTAINS toLower("Engineering")
+      RETURN p.name AS manager, d.name AS department
+      LIMIT 25
+
+  - question: "Who reports to Alice Chen?"
+    cypher: |
+      MATCH (p:Person)-[:REPORTS_TO]->(mgr:Person)
+      WHERE toLower(mgr.name) CONTAINS toLower("Alice Chen")
+      RETURN p.name AS employee, mgr.name AS manager
+      LIMIT 25
+
+  # ── TOP-N QUERIES ──────────────────────────────
+
+  - question: "Which department has the highest budget?"
+    cypher: |
+      MATCH (d:Department)
+      RETURN d.name AS department, d.budget AS budget
+      ORDER BY d.budget DESC
+      LIMIT 1
+
+  - question: "Who was hired most recently?"
+    cypher: |
+      MATCH (p:Person)
+      RETURN p.name AS person, p.title AS title, p.hire_year AS hire_year
+      ORDER BY p.hire_year DESC
+      LIMIT 1
+
+  # ── PROPERTY FILTERING ────────────────────────
+
+  - question: "Who was hired after 2020?"
+    cypher: |
+      MATCH (p:Person)
+      WHERE p.hire_year > 2020
+      RETURN p.name AS person, p.title AS title, p.hire_year AS hire_year
+      ORDER BY p.hire_year
+      LIMIT 25
+
+  # ── LOCATION QUERIES ──────────────────────────
+
+  - question: "Show me people in the San Francisco office"
+    cypher: |
+      MATCH (p:Person)-[:LOCATED_IN]->(l:Location)
+      WHERE toLower(l.name) CONTAINS toLower("San Francisco")
+      RETURN p.name AS person, l.name AS location, l.city AS city
+      LIMIT 25
+
+  - question: "Which departments are in San Francisco?"
+    cypher: |
+      MATCH (d:Department)-[:LOCATED_IN]->(l:Location)
+      WHERE toLower(l.city) CONTAINS toLower("San Francisco")
+      RETURN d.name AS department, l.name AS office, l.city AS city
+      LIMIT 25
