@@ -1,47 +1,50 @@
-from __future__ import annotations
+"""Application configuration via environment variables."""
 
-from typing import Literal
+from __future__ import annotations
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    """Central configuration loaded from .env / environment."""
 
-    # Environment
-    ENVIRONMENT: Literal["local", "deployed"] = "local"
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
-    # Neo4j
-    NEO4J_URI: str = "bolt://localhost:7687"
-    NEO4J_USER: str = "neo4j"
-    NEO4J_PASSWORD: str = ""
-    NEO4J_DATABASE: str = "neo4j"
+    # ── Agentic system ──
+    agentic_system_enabled: bool = True
+    agentic_max_attempts: int = 3
 
-    # Ollama
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "llama3.1"
-    OLLAMA_TEMPERATURE: float = 0.0
+    # ── Neo4j ──
+    neo4j_uri: str = "neo4j+s://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = ""
+    neo4j_database: str = "neo4j"
+    neo4j_skip_tls_verify: bool = False
 
-    # Agent
-    SCHEMA_CACHE_TTL: int = 300
-    FEW_SHOT_K: int = 5
-    MAX_CYPHER_RETRIES: int = 3
+    # ── LLM – Ollama (default) ──
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1:latest"
 
-    # Rate Limiting
-    RATE_LIMIT_ASK: str = "10/minute"
-    RATE_LIMIT_DEFAULT: str = "30/minute"
+    # ── LLM – OpenAI (optional) ──
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4o-mini"
 
-    # Circuit Breaker
-    CB_FAIL_MAX: int = 5
-    CB_RESET_TIMEOUT: int = 30
+    # ── Cache ──
+    cache_backend: str = "memory"  # "memory" | "redis" | "sqlite"
 
-    # Checkpointer
-    SQLITE_CHECKPOINT_PATH: str = "data/checkpoints/agent.db"
-    REDIS_URL: str = "redis://localhost:6379/0"
+    # ── Server ──
+    server_host: str = "0.0.0.0"
+    server_port: int = 8001
 
+    # ── Derived helpers ──
     @property
-    def is_local(self) -> bool:
-        return self.ENVIRONMENT == "local"
+    def use_openai(self) -> bool:
+        """True when an OpenAI key is configured."""
+        return self.openai_api_key is not None and len(self.openai_api_key) > 3
 
 
 settings = Settings()

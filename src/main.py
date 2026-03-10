@@ -1,40 +1,74 @@
+"""FastAPI application — entry point for the Agentic Graph Query System."""
+
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
-from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 
-from src.core.exceptions import register_exception_handlers
-from src.core.lifespan import lifespan
-from src.core.middleware import RequestContextMiddleware
-from src.core.rate_limiter import create_limiter, rate_limit_exceeded_handler
-from src.routers import health, query, schema
+from src.config import settings
+from src.agents.supervisor_factory import SupervisorFactory
+from src.api.routes.agentic import router as agentic_router
 
+# ── Logging ──
 
-def create_app() -> FastAPI:
-    app = FastAPI(
-        title="Neo4j NL Agent",
-        version="1.0.0",
-        description="Natural language interface to Neo4j graph databases",
-        lifespan=lifespan,
-    )
-
-    # Rate limiter
-    limiter = create_limiter()
-    app.state.limiter = limiter
-    app.add_middleware(SlowAPIMiddleware)
-    app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
-
-    # Request context middleware
-    app.add_middleware(RequestContextMiddleware)
-
-    # Custom exception handlers
-    register_exception_handlers(app)
-
-    # Routers
-    app.include_router(health.router, prefix="/api", tags=["health"])
-    app.include_router(schema.router, prefix="/api", tags=["schema"])
-    app.include_router(query.router, prefix="/api", tags=["query"])
-
-    return app
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
-app = create_app()
+# ── Lifespan ──
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup / shutdown lifecycle."""
+    # Startup
+    logger.info("[🚀] Starting Agentic Graph Query System …")
+    if settings.agentic_system_enabled:
+        logger.info("[6b] Initializing Agentic Supervisor …")
+        try:
+            await SupervisorFactory.create()
+        except Exception as exc:
+            logger.error("[6b] Supervisor init FAILED: %s", exc)
+    else:
+        logger.info("Agentic system disabled (AGENTIC_SYSTEM_ENABLED=false)")
+
+    logger.info("Agentic system API routes registered: POST /api/v1/agentic/chat")
+    yield
+
+    # Shutdown
+    logger.info("[🛑] Shutting down …")
+    await SupervisorFactory.shutdown()
+
+
+# ── App ──
+
+
+app = FastAPI(
+    title="Agentic Graph Query System",
+    description="Autonomous multi-specialist AI system for querying Neo4j graph databases",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Routes
+app.include_router(agentic_router)
+
+
+@app.get("/health")
+async def root_health():
+    return {"status": "ok", "service": "agentic-graph-query"}
