@@ -218,7 +218,7 @@ class Neo4jDatabase(AbstractDatabase):
     ) -> list[dict[str, Any]]:
         session = await self._get_session()
         try:
-            result = await session.run(query, parameters or {})
+            result = await session.run(query, parameters or {})  # type: ignore[arg-type]
             records = await result.data()
             return records
         finally:
@@ -231,7 +231,7 @@ class Neo4jDatabase(AbstractDatabase):
     ) -> list[dict[str, Any]]:
         session = await self._get_session()
         try:
-            result = await session.run(query, parameters or {})
+            result = await session.run(query, parameters or {})  # type: ignore[arg-type]
             records = await result.data()
             return records
         finally:

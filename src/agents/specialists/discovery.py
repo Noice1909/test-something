@@ -7,6 +7,8 @@ import logging
 import time
 from typing import Any
 
+from src.agents.utils import extract_text
+
 from langchain_core.language_models import BaseChatModel
 
 from src.agents.base import DiscoveryResult, SpecialistResult
@@ -77,7 +79,7 @@ class DiscoverySpecialist:
     async def _extract_terms(self, question: str) -> list[str]:
         prompt = _TERM_EXTRACTION_PROMPT.format(question=question)
         response = await self._llm.ainvoke(prompt)
-        text = response.content if hasattr(response, "content") else str(response)
+        text = extract_text(response)
         try:
             # Try to extract JSON array from the response
             start = text.index("[")

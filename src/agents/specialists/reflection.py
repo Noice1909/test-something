@@ -11,6 +11,7 @@ from langchain_core.language_models import BaseChatModel
 
 from src.agents.base import ReflectionResult, RetryStrategy, SpecialistResult
 from src.agents.state import AgentState
+from src.agents.utils import extract_text
 from src.database.abstract import AbstractDatabase
 
 logger = logging.getLogger(__name__)
@@ -92,7 +93,7 @@ class ReflectionSpecialist:
             )
 
             response = await self._llm.ainvoke(prompt)
-            text = response.content if hasattr(response, "content") else str(response)
+            text = extract_text(response)
             reflection = self._parse_response(text)
             state.reflection = reflection
 

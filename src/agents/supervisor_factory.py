@@ -73,7 +73,7 @@ def _create_llm() -> Any:
         logger.info("Using OpenAI model: %s", settings.openai_model)
         return ChatOpenAI(
             model=settings.openai_model,
-            api_key=settings.openai_api_key,
+            api_key=settings.openai_api_key,  # type: ignore[arg-type]
             temperature=0,
         )
     else:

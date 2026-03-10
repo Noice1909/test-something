@@ -7,6 +7,8 @@ import logging
 import time
 from typing import Any
 
+from src.agents.utils import extract_text
+
 from langchain_core.language_models import BaseChatModel
 
 from src.agents.base import SchemaSelection, SpecialistResult
@@ -77,7 +79,7 @@ class SchemaReasoningSpecialist:
                 patterns=patterns_text,
             )
             response = await self._llm.ainvoke(prompt)
-            text = response.content if hasattr(response, "content") else str(response)
+            text = extract_text(response)
 
             # 5) Parse JSON
             selection = self._parse_response(text, schema)

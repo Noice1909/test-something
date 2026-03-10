@@ -155,6 +155,10 @@ dmypy.json
 # Profiling data
 .prof
 
+# agent
+.agent/
+.claude/
+
 # OS generated files
 .DS_Store
 .DS_Store?

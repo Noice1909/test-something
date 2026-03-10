@@ -22,6 +22,7 @@ from src.agents.specialists.query_planning import QueryPlanningSpecialist
 from src.agents.specialists.query_generation import QueryGenerationSpecialist
 from src.agents.specialists.execution import ExecutionSpecialist
 from src.agents.specialists.reflection import ReflectionSpecialist
+from src.agents.utils import extract_text
 from src.database.abstract import AbstractDatabase
 
 logger = logging.getLogger(__name__)
@@ -181,7 +182,7 @@ class Supervisor:
         prompt = _STRATEGY_PROMPT.format(question=question)
         try:
             response = await self._llm.ainvoke(prompt)
-            text = response.content if hasattr(response, "content") else str(response)
+            text = extract_text(response)
             start = text.index("{")
             end = text.rindex("}") + 1
             data = json.loads(text[start:end])
@@ -234,7 +235,7 @@ class Supervisor:
         prompt = _ANSWER_PROMPT.format(question=question, results=results_text)
         try:
             response = await self._llm.ainvoke(prompt)
-            return response.content if hasattr(response, "content") else str(response)
+            return extract_text(response)
         except Exception as exc:
             logger.warning("Answer formatting failed: %s", exc)
             return f"Found {len(rows)} results:\n" + "\n".join(

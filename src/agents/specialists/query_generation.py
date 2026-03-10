@@ -1,19 +1,51 @@
-"""Query Generation Specialist — creates database-specific queries."""
+"""Query Generation Specialist — creates database-specific queries.
+
+Loads the Cypher syntax skill from .agent/skills/cypher_syntax/SKILL.md and
+injects the reference into the LLM prompt so it can generate syntactically
+correct queries for all common patterns (aggregation, traversal, filtering, etc.).
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
 from src.agents.base import GeneratedQuery, SpecialistResult
 from src.agents.state import AgentState
+from src.agents.utils import extract_text
 from src.database.abstract import AbstractDatabase
 
 logger = logging.getLogger(__name__)
+
+# ── Load Cypher syntax skill ─────────────────────────────────────────────────
+
+_SKILL_PATH = Path(__file__).resolve().parents[2] / ".." / ".agent" / "skills" / "cypher_syntax" / "SKILL.md"
+
+
+def _load_cypher_skill() -> str:
+    """Read the Cypher syntax SKILL.md and strip the YAML front-matter."""
+    try:
+        path = _SKILL_PATH.resolve()
+        text = path.read_text(encoding="utf-8")
+        # Strip YAML front-matter (between --- markers)
+        if text.startswith("---"):
+            end = text.index("---", 3)
+            text = text[end + 3:].strip()
+        logger.info("Cypher syntax skill loaded from %s", path)
+        return text
+    except Exception as exc:
+        logger.warning("Could not load Cypher syntax skill: %s", exc)
+        return ""
+
+
+_CYPHER_REFERENCE = _load_cypher_skill()
+
+# ── Prompt ────────────────────────────────────────────────────────────────────
 
 _GENERATION_PROMPT = """\
 You are a Neo4j Cypher query expert. Generate a READ-ONLY Cypher query to \
@@ -36,12 +68,21 @@ Relationship Patterns: {patterns}
 ## Discovered Entities
 {discoveries}
 
-## Rules
-1. ONLY use labels and relationship types from the schema above
-2. The query MUST be read-only (no CREATE, MERGE, DELETE, SET, REMOVE)
-3. Always include a LIMIT clause (default 25)
-4. Use parameterized queries with $param syntax where possible
-5. Return meaningful properties, not just node references
+{cypher_reference}
+
+## CRITICAL Rules — You MUST follow these
+1. ONLY use node labels listed in "Node Labels" above. Do NOT invent labels.
+   - Example: if the schema has Person and Movie but NOT Director, then to find
+     directors use: MATCH (p:Person)-[:DIRECTED]->(m:Movie)  — NOT (d:Director)
+   - Roles like Director, Actor, Producer are expressed via RELATIONSHIPS, not labels.
+2. ONLY use relationship types listed in "Relationship Types" above.
+3. The query MUST be read-only (no CREATE, MERGE, DELETE, SET, REMOVE).
+4. The query MUST end with a RETURN clause (never end with WITH).
+5. Always include a LIMIT clause (default 25).
+6. Return meaningful properties (e.g. n.name, n.title), NOT raw node references.
+7. For "most" / "top" questions use ORDER BY aggregate DESC LIMIT N.
+8. Always alias aggregations (e.g. count(m) AS movie_count).
+9. Use the "Relationship Patterns" above to determine traversal direction.
 
 Return a JSON object with:
 - "query": the Cypher query string
@@ -96,10 +137,11 @@ class QueryGenerationSpecialist:
                 label_props=label_props or "None",
                 patterns=patterns,
                 discoveries=disc_text,
+                cypher_reference=_CYPHER_REFERENCE,
             )
 
             response = await self._llm.ainvoke(prompt)
-            text = response.content if hasattr(response, "content") else str(response)
+            text = extract_text(response)
             generated = self._parse_response(text)
 
             # Validate read-only
