@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from src.agents.supervisor import Supervisor
 from src.config import settings
 from src.database.neo4j import Neo4jDatabase
+from src.llm import create_llm
 from src.tools import TOOL_REGISTRY
 
 logger = logging.getLogger(__name__)
@@ -28,8 +28,8 @@ class SupervisorFactory:
         db = Neo4jDatabase()
         await db.connect()
 
-        # 2) LLM
-        llm = _create_llm()
+        # 2) LLM — created via centralised provider
+        llm = create_llm()
 
         # 3) Tools
         tools = TOOL_REGISTRY
@@ -63,25 +63,3 @@ class SupervisorFactory:
             await _instance._db.disconnect()
             _instance = None
             logger.info("Agentic system shut down")
-
-
-def _create_llm() -> Any:
-    """Build a LangChain chat model from settings."""
-    if settings.use_openai:
-        from langchain_openai import ChatOpenAI
-
-        logger.info("Using OpenAI model: %s", settings.openai_model)
-        return ChatOpenAI(
-            model=settings.openai_model,
-            api_key=settings.openai_api_key,  # type: ignore[arg-type]
-            temperature=0,
-        )
-    else:
-        from langchain_ollama import ChatOllama
-
-        logger.info("Using Ollama model: %s @ %s", settings.ollama_model, settings.ollama_base_url)
-        return ChatOllama(
-            model=settings.ollama_model,
-            base_url=settings.ollama_base_url,
-            temperature=0,
-        )

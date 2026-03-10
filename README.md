@@ -166,6 +166,9 @@ src/
 ├── database/
 │   ├── abstract.py              # DB interface
 │   └── neo4j.py                 # Neo4j async driver (TLS, retry, reconnect)
+├── llm/
+│   ├── __init__.py              # Re-exports create_llm, get_llm
+│   └── provider.py             # Centralised LLM factory (Ollama / OpenAI)
 ├── tools/                       # ~80 Neo4j tools
 │   ├── schema_discovery.py
 │   ├── graph_exploration.py
