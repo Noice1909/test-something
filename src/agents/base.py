@@ -90,6 +90,7 @@ class GeneratedQuery:
     language: str = "cypher"
     parameters: dict[str, Any] = field(default_factory=dict)
     is_read_only: bool = True
+    reasoning: str = ""
 
 
 @dataclass
@@ -134,3 +135,4 @@ class AgenticResponse:
     success: bool
     trace_id: str
     specialist_log: list[dict[str, Any]] = field(default_factory=list)
+    cypher_attempts: list[dict[str, Any]] = field(default_factory=list)

@@ -53,6 +53,10 @@ class ExecutionSpecialist:
                 row_count=len(rows),
                 duration_ms=dur,
             )
+            # Update the last cypher attempt with execution result
+            if state.cypher_attempts:
+                state.cypher_attempts[-1]["success"] = True
+                state.cypher_attempts[-1]["row_count"] = len(rows)
             state.log_specialist(
                 "execution", success=True, duration_ms=dur,
                 detail=f"{len(rows)} rows in {dur:.0f}ms",
@@ -65,6 +69,10 @@ class ExecutionSpecialist:
             state.execution_result = ExecutionResult(
                 success=False, error=str(exc), error_category=category, duration_ms=dur,
             )
+            # Update the last cypher attempt with failure
+            if state.cypher_attempts:
+                state.cypher_attempts[-1]["success"] = False
+                state.cypher_attempts[-1]["error"] = str(exc)
             state.log_specialist("execution", success=False, duration_ms=dur, detail=str(exc))
             return SpecialistResult(success=False, error=str(exc), duration_ms=dur)
 

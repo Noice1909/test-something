@@ -44,6 +44,7 @@ class AgentState:
 
     # ── observability ──
     history: list[dict[str, Any]] = field(default_factory=list)
+    cypher_attempts: list[dict[str, Any]] = field(default_factory=list)
     _start_time: float = field(default_factory=time.time)
 
     # ── helpers ──
@@ -60,6 +61,29 @@ class AgentState:
             "detail": detail,
         })
 
+    def log_cypher_attempt(
+        self,
+        *,
+        query: str,
+        parameters: dict[str, Any] | None = None,
+        reasoning: str = "",
+        success: bool = False,
+        error: str | None = None,
+        row_count: int = 0,
+        attempt: int | None = None,
+    ) -> None:
+        """Record a Cypher query execution attempt."""
+        self.cypher_attempts.append({
+            "attempt": attempt or self.attempt_number,
+            "cypher": query,
+            "parameters": parameters or {},
+            "reasoning": reasoning,
+            "success": success,
+            "error": error,
+            "row_count": row_count,
+        })
+
     @property
     def elapsed_ms(self) -> float:
         return round((time.time() - self._start_time) * 1000, 2)
+

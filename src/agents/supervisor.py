@@ -149,6 +149,7 @@ class Supervisor:
                     success=True,
                     trace_id=state.trace_id,
                     specialist_log=state.history,
+                    cypher_attempts=state.cypher_attempts,
                 )
 
             # 4) Query failed — reflect
@@ -163,6 +164,7 @@ class Supervisor:
                     success=False,
                     trace_id=state.trace_id,
                     specialist_log=state.history,
+                    cypher_attempts=state.cypher_attempts,
                 )
 
             # Apply retry adjustments
@@ -176,6 +178,7 @@ class Supervisor:
             success=False,
             trace_id=state.trace_id,
             specialist_log=state.history,
+            cypher_attempts=state.cypher_attempts,
         )
 
     async def _decide_strategy(self, question: str) -> SupervisorDecision:

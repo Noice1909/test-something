@@ -29,6 +29,7 @@ class AgenticChatResponse(BaseModel):
     success: bool
     trace_id: str
     specialist_log: list[dict] = []
+    cypher_attempts: list[dict] = []
 
 
 class AgenticHealthResponse(BaseModel):
@@ -59,6 +60,7 @@ async def agentic_chat(request: AgenticChatRequest) -> AgenticChatResponse:
         success=result.success,
         trace_id=result.trace_id,
         specialist_log=result.specialist_log,
+        cypher_attempts=result.cypher_attempts,
     )
 
 

@@ -87,6 +87,7 @@ Relationship Patterns: {patterns}
 Return a JSON object with:
 - "query": the Cypher query string
 - "parameters": dict of query parameters (or empty dict)
+- "reasoning": brief explanation of WHY you chose this query structure
 
 Return ONLY the JSON object:"""
 
@@ -158,6 +159,12 @@ class QueryGenerationSpecialist:
                 "query_generation", success=True, duration_ms=dur,
                 detail=f"Cypher: {generated.query[:100]}…",
             )
+            # Log this cypher attempt (not yet executed)
+            state.log_cypher_attempt(
+                query=generated.query,
+                parameters=generated.parameters,
+                reasoning=generated.reasoning,
+            )
             return SpecialistResult(success=True, data=generated, duration_ms=dur)
 
         except Exception as exc:
@@ -176,11 +183,13 @@ class QueryGenerationSpecialist:
 
         query = data.get("query", "")
         params = data.get("parameters", {})
+        reasoning = data.get("reasoning", "")
         return GeneratedQuery(
             query=query,
             language="cypher",
             parameters=params,
             is_read_only=self._check_read_only(query),
+            reasoning=reasoning,
         )
 
     @staticmethod
