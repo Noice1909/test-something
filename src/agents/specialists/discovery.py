@@ -1,37 +1,111 @@
-"""Discovery Specialist — actively searches the database for entities."""
+"""Discovery Specialist — LLM-driven tool selection for entity search.
+
+Instead of hardcoded search strategies, the LLM autonomously picks
+from the available MCP tools to discover entities in the graph database.
+"""
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import time
 from typing import Any
 
-from src.agents.utils import extract_text
-
 from langchain_core.language_models import BaseChatModel
 
 from src.agents.base import DiscoveryResult, SpecialistResult
 from src.agents.state import AgentState
+from src.agents.utils import extract_text
 from src.database.abstract import AbstractDatabase
 
 logger = logging.getLogger(__name__)
 
-_TERM_EXTRACTION_PROMPT = """\
-Extract the key search terms from this question that should be looked up in a \
-graph database. Return a JSON array of strings. Only include meaningful terms \
-(entity names, acronyms, specific nouns). Omit generic words like "show", "find", \
-"list".
+# ── Tool catalog — only discovery-relevant tools are shown to the LLM ────────
 
-Question: {question}
+_DISCOVERY_TOOL_NAMES: list[str] = [
+    # Text search
+    "search_nodes_by_text",
+    "search_relationships_by_text",
+    "search_nodes_by_property",
+    "search_nodes_by_multiple_properties",
+    "search_nodes_using_fulltext_index",
+    # Labels & schema
+    "get_all_labels",
+    "get_nodes_by_label",
+    "get_all_relationship_types",
+    # APOC text (fuzzy)
+    "apoc_text_fuzzyMatch",
+    "apoc_text_similarity",
+    "apoc_text_levenshteinDistance",
+    "apoc_text_distance",
+    # Sampling
+    "sample_random_nodes",
+    # Fulltext
+    "get_fulltext_indexes",
+]
 
-Return ONLY a JSON array, e.g. ["CNAPP", "cloud security"]:"""
+_MAX_TOOL_CALLS = 3
 
-_DISCOVERY_STRATEGIES = ["exact_match", "fuzzy_match", "label_match"]
+# ── Prompts ──────────────────────────────────────────────────────────────────
+
+_TOOL_SELECTION_PROMPT = """\
+You are a graph database entity discovery agent. Your job is to find relevant \
+entities in the database for the user's question by calling available tools.
+
+## User Question
+{question}
+
+## Available Tools
+{tool_catalog}
+
+## Previous Tool Calls & Results (this session)
+{history}
+
+## Instructions — follow this order of priority:
+1. FIRST try search_nodes_by_text with the key terms from the question. \
+This searches all property values across all nodes.
+2. If text search returns nothing, try get_all_labels to see what labels \
+exist. Then look for labels that partially match the user's terms.
+3. If the user's term might be misspelled or abbreviated, use fuzzy tools:
+   - apoc_text_fuzzyMatch to find similar property values
+   - search_nodes_by_text with shorter substrings (e.g. "CNAP" → try "CNA")
+4. Once you find matching labels, use get_nodes_by_label to get sample nodes.
+5. Do NOT assume label names from the question — always verify they exist first.
+6. If previous calls returned nothing useful, try DIFFERENT search terms \
+or DIFFERENT tools. Never repeat the same call.
+
+Return a JSON object with:
+- "tool_name": name of the tool to call
+- "arguments": dict of arguments (excluding 'db')
+- "reasoning": why you chose this tool
+
+If you have found enough entities (or no more tools would help), return:
+- "done": true
+- "reasoning": why you're stopping
+
+Return ONLY the JSON object:"""
+
+_RESULT_ANALYSIS_PROMPT = """\
+You called tool "{tool_name}" and got these results:
+
+{results}
+
+Based on the user's question "{question}", extract any discovered entities.
+
+Return a JSON object with:
+- "entities": list of objects with "name", "label", "node_id", "confidence" \
+(0-1), "properties" (dict)
+- If no useful entities found, return empty list
+
+Return ONLY the JSON object:"""
+
+
+# ── Specialist ───────────────────────────────────────────────────────────────
 
 
 class DiscoverySpecialist:
-    """Finds entities in the database through multi-strategy search."""
+    """Finds entities using LLM-driven tool selection from the MCP registry."""
 
     def __init__(
         self, db: AbstractDatabase, llm: BaseChatModel, tools: dict[str, Any]
@@ -39,22 +113,105 @@ class DiscoverySpecialist:
         self._db = db
         self._llm = llm
         self._tools = tools
+        self._tool_catalog = self._build_tool_catalog()
+
+    def _build_tool_catalog(self) -> str:
+        """Build a human-readable catalog of available discovery tools."""
+        lines: list[str] = []
+        for name in _DISCOVERY_TOOL_NAMES:
+            fn = self._tools.get(name)
+            if fn is None:
+                continue
+
+            sig = inspect.signature(fn)
+            params = []
+            for p in sig.parameters.values():
+                if p.name in ("db", "_", "kwargs"):
+                    continue
+                if p.kind == inspect.Parameter.VAR_KEYWORD:
+                    continue
+                annotation = ""
+                if p.annotation != inspect.Parameter.empty:
+                    annotation = (
+                        f": {p.annotation.__name__}"
+                        if hasattr(p.annotation, "__name__")
+                        else f": {p.annotation}"
+                    )
+                default = ""
+                if p.default != inspect.Parameter.empty:
+                    default = f" = {p.default!r}"
+                params.append(f"{p.name}{annotation}{default}")
+
+            doc = (fn.__doc__ or "No description").strip().split("\n")[0]
+            params_str = ", ".join(params)
+            lines.append(f"- {name}({params_str})\n    {doc}")
+
+        return "\n".join(lines)
 
     async def run(self, state: AgentState) -> SpecialistResult:
         t0 = time.time()
         try:
-            # 1) Extract search terms via LLM
-            terms = await self._extract_terms(state.question)
-            if not terms:
-                return SpecialistResult(success=False, error="No search terms extracted")
-
-            # 2) Search with multiple strategies
             all_discoveries: list[DiscoveryResult] = []
-            for term in terms:
-                results = await self._search_term(term)
-                all_discoveries.extend(results)
+            call_history: list[str] = []
 
-            # 3) De-duplicate by node_id
+            for step in range(1, _MAX_TOOL_CALLS + 1):
+                # Ask LLM which tool to call
+                tool_decision = await self._ask_llm_for_tool(
+                    state.question, call_history,
+                )
+
+                if tool_decision.get("done"):
+                    logger.info(
+                        "[%s] Discovery done after %d tool calls: %s",
+                        state.trace_id, step - 1, tool_decision.get("reasoning", ""),
+                    )
+                    break
+
+                tool_name = tool_decision.get("tool_name", "")
+                arguments = tool_decision.get("arguments", {})
+                reasoning = tool_decision.get("reasoning", "")
+
+                if tool_name not in self._tools:
+                    call_history.append(
+                        f"Step {step}: Tried {tool_name} — tool not available"
+                    )
+                    continue
+
+                # Execute the tool
+                logger.info(
+                    "[%s] Discovery step %d: %s(%s)",
+                    state.trace_id, step, tool_name, arguments,
+                )
+                try:
+                    results = await self._tools[tool_name](self._db, **arguments)
+                    results_str = json.dumps(
+                        results[:15] if isinstance(results, list) else results,
+                        indent=2, default=str,
+                    )
+                    # Truncate very long results
+                    if len(results_str) > 2000:
+                        results_str = results_str[:2000] + "\n... (truncated)"
+
+                    call_history.append(
+                        f"Step {step}: Called {tool_name}({arguments})\n"
+                        f"  Reasoning: {reasoning}\n"
+                        f"  Result: {results_str}"
+                    )
+
+                    # Extract entities from results
+                    entities = await self._extract_entities(
+                        tool_name, results_str, state.question,
+                    )
+                    all_discoveries.extend(entities)
+
+                except Exception as exc:
+                    call_history.append(
+                        f"Step {step}: Called {tool_name}({arguments}) — "
+                        f"ERROR: {exc}"
+                    )
+                    logger.debug("Tool %s failed: %s", tool_name, exc)
+
+            # De-duplicate by node_id
             seen: set[str] = set()
             unique: list[DiscoveryResult] = []
             for d in sorted(all_discoveries, key=lambda x: x.confidence, reverse=True):
@@ -65,96 +222,72 @@ class DiscoverySpecialist:
 
             state.discoveries = unique
             dur = (time.time() - t0) * 1000
-            state.log_specialist("discovery", success=True, duration_ms=dur,
-                                 detail=f"{len(unique)} entities found for terms {terms}")
+            state.log_specialist(
+                "discovery", success=True, duration_ms=dur,
+                detail=f"{len(unique)} entities found via {len(call_history)} tool calls",
+            )
             return SpecialistResult(success=True, data=unique, duration_ms=dur)
 
         except Exception as exc:
             dur = (time.time() - t0) * 1000
-            state.log_specialist("discovery", success=False, duration_ms=dur, detail=str(exc))
+            state.log_specialist(
+                "discovery", success=False, duration_ms=dur, detail=str(exc),
+            )
             return SpecialistResult(success=False, error=str(exc), duration_ms=dur)
 
-    # ── internals ──
+    # ── LLM interactions ─────────────────────────────────────────────────
 
-    async def _extract_terms(self, question: str) -> list[str]:
-        prompt = _TERM_EXTRACTION_PROMPT.format(question=question)
+    async def _ask_llm_for_tool(
+        self, question: str, history: list[str],
+    ) -> dict[str, Any]:
+        """Ask the LLM which tool to call next."""
+        history_text = "\n\n".join(history) if history else "None (first call)"
+
+        prompt = _TOOL_SELECTION_PROMPT.format(
+            question=question,
+            tool_catalog=self._tool_catalog,
+            history=history_text,
+        )
+
         response = await self._llm.ainvoke(prompt)
         text = extract_text(response)
+
         try:
-            # Try to extract JSON array from the response
-            start = text.index("[")
-            end = text.rindex("]") + 1
+            start = text.index("{")
+            end = text.rindex("}") + 1
             return json.loads(text[start:end])
         except (ValueError, json.JSONDecodeError):
-            # Fallback: split on commas
-            return [t.strip().strip('"\'') for t in text.split(",") if t.strip()]
+            return {"done": True, "reasoning": "Could not parse LLM response"}
 
-    async def _search_term(self, term: str) -> list[DiscoveryResult]:
-        discoveries: list[DiscoveryResult] = []
+    async def _extract_entities(
+        self, tool_name: str, results_str: str, question: str,
+    ) -> list[DiscoveryResult]:
+        """Ask the LLM to extract entities from tool results."""
+        prompt = _RESULT_ANALYSIS_PROMPT.format(
+            tool_name=tool_name,
+            results=results_str,
+            question=question,
+        )
 
-        # Strategy 1: exact text search
-        if "search_nodes_by_text" in self._tools:
-            try:
-                rows = await self._tools["search_nodes_by_text"](self._db, text=term, limit=10)
-                for row in rows:
-                    discoveries.append(DiscoveryResult(
-                        entity_name=term,
-                        label=row.get("labels", ["Unknown"])[0] if row.get("labels") else "Unknown",
-                        node_id=str(row.get("id", "")),
-                        confidence=0.9,
-                        match_type="exact_match",
-                        properties=row.get("props", {}),
-                    ))
-            except Exception as exc:
-                logger.debug("exact search failed for '%s': %s", term, exc)
+        response = await self._llm.ainvoke(prompt)
+        text = extract_text(response)
 
-        # Strategy 2: fulltext index search (fuzzy)
-        if "search_nodes_using_fulltext_index" in self._tools:
-            try:
-                # Try default index names
-                for idx_name in ["node_fulltext", "nodeFulltext", "fulltext"]:
-                    try:
-                        rows = await self._tools["search_nodes_using_fulltext_index"](
-                            self._db, index_name=idx_name, query=f"{term}~", limit=10,
-                        )
-                        for row in rows:
-                            discoveries.append(DiscoveryResult(
-                                entity_name=term,
-                                label=row.get("labels", ["Unknown"])[0] if row.get("labels") else "Unknown",
-                                node_id=str(row.get("id", "")),
-                                confidence=row.get("score", 0.7),
-                                match_type="fuzzy_match",
-                                properties=row.get("props", {}),
-                            ))
-                        if rows:
-                            break
-                    except Exception:
-                        continue
-            except Exception as exc:
-                logger.debug("fulltext search failed for '%s': %s", term, exc)
+        try:
+            start = text.index("{")
+            end = text.rindex("}") + 1
+            data = json.loads(text[start:end])
+        except (ValueError, json.JSONDecodeError):
+            return []
 
-        # Strategy 3: label match — check if term matches a label name
-        if "get_all_labels" in self._tools:
-            try:
-                labels = await self._tools["get_all_labels"](self._db)
-                term_upper = term.upper()
-                for label in labels:
-                    if term_upper in label.upper() or label.upper() in term_upper:
-                        # Get sample nodes for this label
-                        if "get_nodes_by_label" in self._tools:
-                            nodes = await self._tools["get_nodes_by_label"](
-                                self._db, label=label, limit=5,
-                            )
-                            for node in nodes:
-                                discoveries.append(DiscoveryResult(
-                                    entity_name=label,
-                                    label=label,
-                                    node_id=str(node.get("id", "")),
-                                    confidence=0.8,
-                                    match_type="label_match",
-                                    properties=node.get("props", {}),
-                                ))
-            except Exception as exc:
-                logger.debug("label match failed for '%s': %s", term, exc)
+        entities: list[DiscoveryResult] = []
+        for ent in data.get("entities", []):
+            entities.append(DiscoveryResult(
+                entity_name=ent.get("name", ""),
+                label=ent.get("label", "Unknown"),
+                node_id=str(ent.get("node_id", "")),
+                confidence=float(ent.get("confidence", 0.5)),
+                match_type=f"tool:{tool_name}",
+                properties=ent.get("properties", {}),
+            ))
 
-        return discoveries
+        return entities

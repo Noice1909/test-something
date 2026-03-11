@@ -83,6 +83,18 @@ class SchemaReasoningSpecialist:
 
             # 5) Parse JSON
             selection = self._parse_response(text, schema)
+
+            # Fallback: if no labels selected, provide ALL labels so
+            # query generation can't invent labels that don't exist.
+            if not selection.node_labels:
+                all_labels = schema.get("labels", [])
+                selection.node_labels = all_labels
+                selection.reasoning += " (fallback: all labels provided)"
+                logger.info("Schema reasoning selected 0 labels — using all %d labels", len(all_labels))
+
+            if not selection.relationship_types:
+                selection.relationship_types = schema.get("relationship_types", [])
+
             state.schema_selection = selection
 
             dur = (time.time() - t0) * 1000
