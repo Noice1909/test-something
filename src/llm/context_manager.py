@@ -20,8 +20,10 @@ def count_tokens(text: str) -> int:
             import tiktoken
             enc = tiktoken.encoding_for_model(settings.openai_model)
             return len(enc.encode(text))
-        except Exception:
-            pass
+        except Exception as exc:
+            # tiktoken not installed or model not found, fallback to heuristic
+            import logging
+            logging.getLogger(__name__).debug("tiktoken encoding failed, using heuristic: %s", exc)
     # Rough heuristic: ~4 chars per token for English text
     return len(text) // 4
 

@@ -67,14 +67,14 @@ class ConversationManager:
             for d in latest.discoveries:
                 try:
                     state.discoveries.append(DiscoveryResult(**d))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Skipping malformed discovery in checkpoint: %s", exc)
 
         if latest.schema_selection:
             try:
                 state.schema_selection = SchemaSelection(**latest.schema_selection)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Skipping malformed schema_selection in checkpoint: %s", exc)
 
         logger.info(
             "Restored conversation %s turn %d (prior turns=%d)",

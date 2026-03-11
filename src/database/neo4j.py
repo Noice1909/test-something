@@ -158,9 +158,20 @@ class Neo4jDatabase(AbstractDatabase):
         logger.info("Neo4j reconnected successfully.")
 
     async def health_check(self) -> dict[str, Any]:
+        """Check database health WITHOUT going through circuit breaker.
+
+        This method bypasses the circuit breaker to test the actual
+        database connection, not the circuit breaker state.
+        """
         try:
-            result = await self.execute_read("RETURN 1 AS ok")
-            return {"healthy": True, "result": result}
+            # Direct query without circuit breaker
+            session = await self._get_session()
+            try:
+                result = await session.run("RETURN 1 AS ok")  # type: ignore[arg-type]
+                data = await result.data()
+                return {"healthy": True, "result": data}
+            finally:
+                await session.close()
         except Exception as exc:
             return {"healthy": False, "error": str(exc)}
 
@@ -230,7 +241,7 @@ class Neo4jDatabase(AbstractDatabase):
                 await session.close()
 
         try:
-            return await neo4j_breaker.call_async(_run)
+            return await neo4j_breaker.call(_run)
         except Exception as exc:
             if "circuit breaker" in str(exc).lower() or type(exc).__name__ == "CircuitBreakerError":
                 raise CircuitOpenError("neo4j", neo4j_breaker.reset_timeout) from exc
@@ -252,7 +263,7 @@ class Neo4jDatabase(AbstractDatabase):
                 await session.close()
 
         try:
-            return await neo4j_breaker.call_async(_run)
+            return await neo4j_breaker.call(_run)
         except Exception as exc:
             if "circuit breaker" in str(exc).lower() or type(exc).__name__ == "CircuitBreakerError":
                 raise CircuitOpenError("neo4j", neo4j_breaker.reset_timeout) from exc

@@ -350,8 +350,8 @@ class Supervisor:
                     strategy=StrategyType(cached["strategy"]),
                     reasoning=cached.get("reasoning", "cached"),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Ignoring malformed cached strategy, will recompute: %s", exc)
 
         # Build conversation context
         conv_context = ""

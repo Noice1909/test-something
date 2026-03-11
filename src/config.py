@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     auth_api_key: str = ""  # if set, X-API-Key header required; empty = disabled
 
     # ── Rate limiting ──
-    rate_limit_default: str = "10/minute"
+    rate_limit_default: str = "30/minute"
     rate_limit_storage: str = "memory"  # "memory" | "redis://..."
 
     # ── Request timeout ──

@@ -58,8 +58,8 @@ class ExecutionSpecialist:
                         dur = (time.time() - t0) * 1000
                         state.log_specialist("execution", success=False, duration_ms=dur, detail=err)
                         return SpecialistResult(success=False, error=err, duration_ms=dur)
-        except Exception:
-            pass  # EXPLAIN not supported or failed — proceed with execution
+        except Exception as exc:
+            logger.debug("EXPLAIN not supported or failed, proceeding with execution: %s", exc)
 
         try:
             rows = await self._db.execute_read(query, params)

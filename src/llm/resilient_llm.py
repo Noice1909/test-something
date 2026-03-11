@@ -18,7 +18,7 @@ class ResilientLLM:
 
     async def ainvoke(self, input: Any, **kwargs: Any) -> BaseMessage:  # noqa: A002
         try:
-            return await llm_breaker.call_async(self._llm.ainvoke, input, **kwargs)
+            return await llm_breaker.call(self._llm.ainvoke, input, **kwargs)
         except Exception as exc:
             if "circuit breaker" in str(exc).lower() or isinstance(exc, Exception) and type(exc).__name__ == "CircuitBreakerError":
                 raise CircuitOpenError("llm", llm_breaker.reset_timeout) from exc
