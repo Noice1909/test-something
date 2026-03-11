@@ -50,16 +50,25 @@ Return a JSON object with:
 Return ONLY the JSON object:"""
 
 _ANSWER_PROMPT = """\
-Based on these query results, provide a concise natural-language answer to the \
-user's question.
+You are answering a user's question using graph database query results. \
+Your job is to give a DIRECT, clear answer.
 
 ## Question
 {question}
 
-## Results
+## Query Results
 {results}
 
-Provide a helpful, conversational answer:"""
+## Rules
+1. Answer DIRECTLY — state the answer in the very first sentence.
+2. NEVER start with "Based on the provided information" or similar hedging.
+3. NEVER say "there is not" or decline if the results DO contain data.
+4. If results have data, summarize it clearly and concisely.
+5. If results are empty, say so simply: "No matching data was found."
+6. Use natural language, not technical jargon.
+7. Keep the answer concise — 1 to 3 sentences for simple queries.
+
+Answer:"""
 
 # Maps strategy → ordered specialist sequence
 _STRATEGY_SEQUENCES: dict[StrategyType, list[str]] = {
