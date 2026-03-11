@@ -40,12 +40,14 @@ class SupervisorFactory:
             llm=llm,
             tools=tools,
             max_attempts=settings.agentic_max_attempts,
+            max_empty_retries=settings.agentic_max_empty_retries,
         )
 
         _instance = supervisor
         logger.info(
-            "✓ Agentic system initialized (max_attempts=%d, tools=%d)",
+            "✓ Agentic system initialized (max_attempts=%d, max_empty_retries=%d, tools=%d)",
             settings.agentic_max_attempts,
+            settings.agentic_max_empty_retries,
             len(tools),
         )
         return supervisor

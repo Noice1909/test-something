@@ -141,6 +141,26 @@ class QueryGenerationSpecialist:
                 cypher_reference=_CYPHER_REFERENCE,
             )
 
+            # If retrying after empty results, tell the LLM what was tried
+            if state.previous_empty_queries:
+                prev_lines = "\n".join(
+                    f"  {i+1}. {pq.get('query', 'N/A')} → returned 0 rows\n"
+                    f"     Why: {pq.get('reasoning', 'N/A')}"
+                    for i, pq in enumerate(state.previous_empty_queries)
+                )
+                next_hint = state.reflection.next_approach or ""
+                prompt += (
+                    f"\n\n## ⚠ Previous queries returned 0 rows — "
+                    f"use a DIFFERENT approach:\n{prev_lines}"
+                )
+                if next_hint:
+                    prompt += (
+                        f"\n\n## Suggested next approach:\n{next_hint}\n\n"
+                        "Generate a DIFFERENT query based on the suggestion above. "
+                        "Consider different properties, reversed directions, or "
+                        "connecting through intermediate nodes."
+                    )
+
             response = await self._llm.ainvoke(prompt)
             text = extract_text(response)
             generated = self._parse_response(text)

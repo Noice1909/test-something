@@ -34,18 +34,37 @@ Relationship Types: {rel_types}
 ## Strategy Options
 - DIRECT: Simple match on a single label (e.g. "find all Movies")
 - ONE_HOP: One relationship traversal (e.g. "movies directed by X")
-- MULTI_HOP: Multiple hops/traversals (e.g. "actors who worked with directors of X")
+- TWO_HOP: Two relationship traversals through an intermediate node \
+(e.g. "genres of movies by Tom Hanks" → Person→Movie→Genre)
+- MULTI_HOP: Three or more hops (use sparingly, only when needed)
 - AGGREGATION: Count/sum/avg operations (e.g. "how many movies are there")
 
 ## Intent Options
 - LIST: Return a list of entities
-- COUNT: Return a count/number
+- COUNT: Return a count or number
 - FIND: Find a specific entity
-- EXPLORE: Explore relationships/connections
+- EXPLORE: Explore relationships and connections
+- COMPARE: Compare two or more entities
+- RANK: Order/rank entities by a metric (top N, best, most, etc.)
+- EXISTS: Check if something exists (yes/no)
+- PATH: Find how two entities are connected
+- GROUP: Group entities by a property or category
+- FILTER: Filter entities by conditions
+- DESCRIBE: Describe or detail a specific entity
+- SUGGEST: Recommend similar entities
+- SUMMARIZE: Overview or summary of data
+- TREND: Time-based or sequential patterns
+- RELATE: Explain how entity types relate to each other
+- INDIRECT: Find indirect connections through intermediate nodes
+
+## Important
+- Prefer simpler strategies (DIRECT, ONE_HOP) when possible
+- Only use MULTI_HOP when shorter paths cannot answer the question
+- The intent should reflect what the user actually wants to know
 
 Return a JSON object with:
-- "strategy": one of DIRECT, ONE_HOP, MULTI_HOP, AGGREGATION
-- "intent": one of LIST, COUNT, FIND, EXPLORE
+- "strategy": one of DIRECT, ONE_HOP, TWO_HOP, MULTI_HOP, AGGREGATION
+- "intent": one of the intents above
 - "reasoning": brief explanation
 - "filters": optional dict of filter conditions
 
@@ -105,6 +124,7 @@ class QueryPlanningSpecialist:
         strategy_map = {
             "DIRECT": QueryComplexity.DIRECT,
             "ONE_HOP": QueryComplexity.ONE_HOP,
+            "TWO_HOP": QueryComplexity.TWO_HOP,
             "MULTI_HOP": QueryComplexity.MULTI_HOP,
             "AGGREGATION": QueryComplexity.AGGREGATION,
         }

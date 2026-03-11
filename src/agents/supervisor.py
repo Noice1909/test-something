@@ -81,6 +81,11 @@ _STRATEGY_SEQUENCES: dict[StrategyType, list[str]] = {
     ],
 }
 
+# For empty-result retries, re-run from planning onward (skip discovery/schema)
+_EMPTY_RETRY_SEQUENCE: list[str] = [
+    "query_planning", "query_generation", "execution",
+]
+
 
 class Supervisor:
     """LLM-based orchestrator that coordinates specialist agents."""
@@ -91,11 +96,13 @@ class Supervisor:
         llm: BaseChatModel,
         tools: dict[str, Any],
         max_attempts: int = 3,
+        max_empty_retries: int = 2,
     ) -> None:
         self._db = db
         self._llm = llm
         self._tools = tools
         self._max_attempts = max_attempts
+        self._max_empty_retries = max_empty_retries
 
         # Create specialist instances
         self._specialists: dict[str, Any] = {
@@ -136,29 +143,37 @@ class Supervisor:
 
             # 3) Check results
             if success and state.execution_result.success:
-                # Query succeeded — format answer
                 if state.execution_result.rows:
+                    # Got data — format a clean user-facing answer
                     answer = await self._format_answer(question, state.execution_result.rows)
-                else:
-                    answer = f"The query executed successfully but returned no results for \"{question}\"."
+                    return AgenticResponse(
+                        answer=answer,
+                        strategy_used=state.strategy.value,
+                        attempts=attempt,
+                        success=True,
+                        trace_id=state.trace_id,
+                        specialist_log=state.history,
+                        cypher_attempts=state.cypher_attempts,
+                    )
 
-                return AgenticResponse(
-                    answer=answer,
-                    strategy_used=state.strategy.value,
-                    attempts=attempt,
-                    success=True,
-                    trace_id=state.trace_id,
-                    specialist_log=state.history,
-                    cypher_attempts=state.cypher_attempts,
-                )
+                # ── Empty results — try alternative approaches gradually ──
+                empty_result = await self._handle_empty_results(state, question)
+                if empty_result is not None:
+                    # Either gave up or exhausted retries — return
+                    return empty_result
+                # Otherwise, the loop continues with the next attempt
+                continue
 
-            # 4) Query failed — reflect
-            reflection_result = await self._specialists["reflection"].run(state, self._max_attempts)
+            # 4) Query failed (execution error) — reflect
+            await self._specialists["reflection"].run(state, self._max_attempts)
 
             if not state.reflection.should_retry:
-                # Give up with fallback
+                # Give up with fallback — clean message only
                 return AgenticResponse(
-                    answer=state.reflection.fallback_answer or f"Unable to answer: {question}",
+                    answer=state.reflection.fallback_answer or (
+                        f"I wasn't able to answer \"{question}\" at this time. "
+                        "Please try rephrasing your question."
+                    ),
                     strategy_used=state.strategy.value,
                     attempts=attempt,
                     success=False,
@@ -170,9 +185,13 @@ class Supervisor:
             # Apply retry adjustments
             self._apply_retry_strategy(state)
 
-        # Should not reach here, but safety fallback
+        # Safety fallback
         return AgenticResponse(
-            answer=f"I could not determine an answer for \"{question}\" after {self._max_attempts} attempts.",
+            answer=(
+                f"I could not determine an answer for \"{question}\" "
+                f"after {self._max_attempts} attempts. "
+                "Please try a different phrasing."
+            ),
             strategy_used=state.strategy.value,
             attempts=self._max_attempts,
             success=False,
@@ -180,6 +199,88 @@ class Supervisor:
             specialist_log=state.history,
             cypher_attempts=state.cypher_attempts,
         )
+
+    # ── Empty-result handler (gradual retry) ─────────────────────────────
+
+    async def _handle_empty_results(
+        self, state: AgentState, question: str,
+    ) -> AgenticResponse | None:
+        """Handle queries that succeeded but returned 0 rows.
+
+        Returns ``None`` to signal the outer loop should continue retrying,
+        or an ``AgenticResponse`` when we've exhausted retries.
+        """
+        logger.info(
+            "[%s] Query returned 0 rows (empty retry %d/%d)",
+            state.trace_id, state.empty_retries_used + 1, self._max_empty_retries,
+        )
+
+        # Record the empty query for context
+        state.previous_empty_queries.append({
+            "query": state.generated_query.query,
+            "reasoning": state.generated_query.reasoning,
+        })
+
+        # Check if we've exhausted empty retries
+        if state.empty_retries_used >= self._max_empty_retries:
+            return AgenticResponse(
+                answer=(
+                    f"After trying {state.empty_retries_used + 1} different query "
+                    f"approaches, no matching data was found for \"{question}\". "
+                    "The data you're looking for may not exist in the current database."
+                ),
+                strategy_used=state.strategy.value,
+                attempts=state.attempt_number,
+                success=True,  # query worked, data just doesn't exist
+                trace_id=state.trace_id,
+                specialist_log=state.history,
+                cypher_attempts=state.cypher_attempts,
+            )
+
+        state.empty_retries_used += 1
+
+        # Ask reflection to analyze schema and suggest next approach
+        await self._specialists["reflection"].run_empty_result(
+            state, self._max_empty_retries,
+        )
+
+        if not state.reflection.should_retry:
+            return AgenticResponse(
+                answer=state.reflection.fallback_answer or (
+                    f"No matching data found for \"{question}\" in the database."
+                ),
+                strategy_used=state.strategy.value,
+                attempts=state.attempt_number,
+                success=True,
+                trace_id=state.trace_id,
+                specialist_log=state.history,
+                cypher_attempts=state.cypher_attempts,
+            )
+
+        # Re-run from planning onward (schema/discoveries already cached)
+        logger.info(
+            "[%s] Empty-result retry: %s",
+            state.trace_id, state.reflection.next_approach[:80],
+        )
+        success = await self._execute_sequence(state, _EMPTY_RETRY_SEQUENCE)
+
+        if success and state.execution_result.success and state.execution_result.rows:
+            # Got data on the retry!
+            answer = await self._format_answer(question, state.execution_result.rows)
+            return AgenticResponse(
+                answer=answer,
+                strategy_used=state.strategy.value,
+                attempts=state.attempt_number,
+                success=True,
+                trace_id=state.trace_id,
+                specialist_log=state.history,
+                cypher_attempts=state.cypher_attempts,
+            )
+
+        # Still empty or failed — let the outer loop handle the next attempt
+        return None
+
+    # ── Strategy decision ────────────────────────────────────────────────
 
     async def _decide_strategy(self, question: str) -> SupervisorDecision:
         prompt = _STRATEGY_PROMPT.format(question=question)

@@ -47,6 +47,10 @@ class AgentState:
     cypher_attempts: list[dict[str, Any]] = field(default_factory=list)
     _start_time: float = field(default_factory=time.time)
 
+    # ── empty-result retry tracking ──
+    empty_retries_used: int = 0
+    previous_empty_queries: list[dict[str, str]] = field(default_factory=list)
+
     # ── helpers ──
 
     def log_specialist(

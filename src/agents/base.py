@@ -24,6 +24,7 @@ class QueryComplexity(str, enum.Enum):
 
     DIRECT = "DIRECT"
     ONE_HOP = "ONE_HOP"
+    TWO_HOP = "TWO_HOP"
     MULTI_HOP = "MULTI_HOP"
     AGGREGATION = "AGGREGATION"
 
@@ -77,7 +78,7 @@ class QueryPlan:
     """Execution plan produced by the planning specialist."""
 
     strategy: QueryComplexity = QueryComplexity.DIRECT
-    intent: str = ""  # LIST, COUNT, FIND, EXPLORE
+    intent: str = ""  # LIST, COUNT, FIND, EXPLORE, COMPARE, RANK, etc.
     reasoning: str = ""
     filters: dict[str, Any] = field(default_factory=dict)
 
@@ -114,6 +115,7 @@ class ReflectionResult:
     modified_parameters: dict[str, Any] = field(default_factory=dict)
     reasoning: str = ""
     fallback_answer: str | None = None
+    next_approach: str = ""  # schema-driven suggestion for next query
 
 
 @dataclass

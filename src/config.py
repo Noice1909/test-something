@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     # ── Agentic system ──
     agentic_system_enabled: bool = True
     agentic_max_attempts: int = 3
+    agentic_max_empty_retries: int = 2
 
     # ── Neo4j ──
     neo4j_uri: str = "neo4j+s://localhost:7687"
