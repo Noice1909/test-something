@@ -1,0 +1,12 @@
+.venv/
+.env
+.env.*
+__pycache__/
+*.pyc
+.git/
+.gitignore
+.claude/
+.agent/
+*.db
+response_data_*.json
+node_modules/

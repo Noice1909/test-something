@@ -59,9 +59,10 @@ class SupervisorFactory:
 
     @staticmethod
     async def shutdown() -> None:
-        """Disconnect the database on app shutdown."""
+        """Cleanup caches, conversation store, and disconnect database."""
         global _instance
         if _instance is not None:
+            await _instance.shutdown()
             await _instance._db.disconnect()
             _instance = None
             logger.info("Agentic system shut down")

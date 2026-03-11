@@ -43,6 +43,24 @@ class ExecutionSpecialist:
             state.log_specialist("execution", success=False, duration_ms=dur, detail=err)
             return SpecialistResult(success=False, error=err, duration_ms=dur)
 
+        # Query cost estimation — reject expensive traversals
+        try:
+            explain_rows = await self._db.execute_read(f"EXPLAIN {query}", params)
+            # Some Neo4j versions return estimated rows; check for excessive cost
+            if explain_rows:
+                for row in explain_rows:
+                    est = row.get("EstimatedRows") or row.get("estimatedRows") or 0
+                    if est > 500_000:
+                        err = f"Query rejected: estimated {est} rows exceeds safety threshold"
+                        state.execution_result = ExecutionResult(
+                            success=False, error=err, error_category="cost",
+                        )
+                        dur = (time.time() - t0) * 1000
+                        state.log_specialist("execution", success=False, duration_ms=dur, detail=err)
+                        return SpecialistResult(success=False, error=err, duration_ms=dur)
+        except Exception:
+            pass  # EXPLAIN not supported or failed — proceed with execution
+
         try:
             rows = await self._db.execute_read(query, params)
             dur = (time.time() - t0) * 1000

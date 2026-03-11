@@ -102,6 +102,9 @@ class Neo4jDatabase(AbstractDatabase):
                 self._driver = AsyncGraphDatabase.driver(
                     resolved_uri,
                     auth=(self._user, self._password),
+                    max_connection_pool_size=settings.neo4j_pool_max_size,
+                    connection_acquisition_timeout=settings.neo4j_pool_acquisition_timeout,
+                    max_connection_lifetime=settings.neo4j_max_connection_lifetime,
                 )
                 # Verify connectivity
                 await self._driver.verify_connectivity()
@@ -216,26 +219,44 @@ class Neo4jDatabase(AbstractDatabase):
         query: str,
         parameters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        session = await self._get_session()
+        from src.resilience.circuit_breaker import neo4j_breaker, CircuitOpenError
+
+        async def _run() -> list[dict[str, Any]]:
+            session = await self._get_session()
+            try:
+                result = await session.run(query, parameters or {})  # type: ignore[arg-type]
+                return await result.data()
+            finally:
+                await session.close()
+
         try:
-            result = await session.run(query, parameters or {})  # type: ignore[arg-type]
-            records = await result.data()
-            return records
-        finally:
-            await session.close()
+            return await neo4j_breaker.call_async(_run)
+        except Exception as exc:
+            if "circuit breaker" in str(exc).lower() or type(exc).__name__ == "CircuitBreakerError":
+                raise CircuitOpenError("neo4j", neo4j_breaker.reset_timeout) from exc
+            raise
 
     async def execute_write(
         self,
         query: str,
         parameters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        session = await self._get_session()
+        from src.resilience.circuit_breaker import neo4j_breaker, CircuitOpenError
+
+        async def _run() -> list[dict[str, Any]]:
+            session = await self._get_session()
+            try:
+                result = await session.run(query, parameters or {})  # type: ignore[arg-type]
+                return await result.data()
+            finally:
+                await session.close()
+
         try:
-            result = await session.run(query, parameters or {})  # type: ignore[arg-type]
-            records = await result.data()
-            return records
-        finally:
-            await session.close()
+            return await neo4j_breaker.call_async(_run)
+        except Exception as exc:
+            if "circuit breaker" in str(exc).lower() or type(exc).__name__ == "CircuitBreakerError":
+                raise CircuitOpenError("neo4j", neo4j_breaker.reset_timeout) from exc
+            raise
 
     # ── convenience ──
 

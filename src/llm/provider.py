@@ -75,6 +75,10 @@ def create_llm(
             temperature=temperature,
         )
 
+    # Wrap with circuit breaker protection
+    from src.llm.resilient_llm import ResilientLLM
+    _llm = ResilientLLM(_llm)  # type: ignore[assignment]
+
     return _llm
 
 

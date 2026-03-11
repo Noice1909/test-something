@@ -51,6 +51,11 @@ class AgentState:
     empty_retries_used: int = 0
     previous_empty_queries: list[dict[str, str]] = field(default_factory=list)
 
+    # ── conversation (multi-turn) ──
+    conversation_id: str | None = None
+    turn_number: int = 1
+    previous_context: list[dict[str, str]] = field(default_factory=list)
+
     # ── helpers ──
 
     def log_specialist(

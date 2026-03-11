@@ -23,7 +23,12 @@ from src.agents.specialists.query_generation import QueryGenerationSpecialist
 from src.agents.specialists.execution import ExecutionSpecialist
 from src.agents.specialists.reflection import ReflectionSpecialist
 from src.agents.utils import extract_text
+from src.agents.conversation import ConversationManager
+from src.cache.cache_manager import CacheManager
+from src.cache.cache_keys import response_key, strategy_key
 from src.database.abstract import AbstractDatabase
+from src.security.prompt_guard import detect_injection, sanitize, wrap_user_input
+from src.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +37,11 @@ You are the supervisor of a graph database query system. Analyze the user's \
 question and choose the best strategy.
 
 ## Question
+<<<USER_INPUT>>>
 {question}
+<<<END_USER_INPUT>>>
+
+{conversation_context}
 
 ## Available Strategies
 1. discovery_first — Use when the question contains unknown terms, acronyms, \
@@ -54,7 +63,9 @@ You are answering a user's question using graph database query results. \
 Your job is to give a DIRECT, clear answer.
 
 ## Question
+<<<USER_INPUT>>>
 {question}
+<<<END_USER_INPUT>>>
 
 ## Query Results
 {results}
@@ -122,24 +133,52 @@ class Supervisor:
             "execution": ExecutionSpecialist(db, tools),
             "reflection": ReflectionSpecialist(db, llm, tools),
         }
+
+        # Caching and conversation
+        self._cache = CacheManager()
+        self._conversation = ConversationManager()
+
         logger.info("Supervisor initialized with %d specialists", len(self._specialists))
 
     async def process_question(
-        self, question: str, trace_id: str | None = None
+        self,
+        question: str,
+        trace_id: str | None = None,
+        conversation_id: str | None = None,
     ) -> AgenticResponse:
         """Process a user question through the agentic pipeline."""
-        state = AgentState(question=question)
+
+        # ── Prompt injection check ──
+        is_suspicious, reason = detect_injection(question)
+        if is_suspicious:
+            logger.warning("Prompt injection detected (reason=%s), sanitizing input", reason)
+        clean_question = sanitize(question)
+
+        # ── Response cache check ──
+        cache_key = response_key(clean_question)
+        cached = await self._cache.get(cache_key)
+        if cached and conversation_id is None:
+            logger.info("Cache HIT for question")
+            return AgenticResponse(**cached, from_cache=True)
+
+        # ── State setup ──
+        state = AgentState(question=clean_question)
         if trace_id:
             state.trace_id = trace_id
 
-        logger.info("[%s] Processing: %s", state.trace_id, question)
+        # ── Conversation context ──
+        conv_id = await self._conversation.prepare_state(state, conversation_id)
+
+        logger.info("[%s] Processing: %s", state.trace_id, clean_question[:100])
+
+        t0 = time.time()
 
         for attempt in range(1, self._max_attempts + 1):
             state.attempt_number = attempt
 
             # 1) Decide strategy
             if attempt == 1:
-                decision = await self._decide_strategy(question)
+                decision = await self._decide_strategy(clean_question, state)
                 state.strategy = decision.strategy
                 logger.info("[%s] Strategy: %s (%s)",
                             state.trace_id, decision.strategy.value, decision.reasoning)
@@ -154,8 +193,8 @@ class Supervisor:
             if success and state.execution_result.success:
                 if state.execution_result.rows:
                     # Got data — format a clean user-facing answer
-                    answer = await self._format_answer(question, state.execution_result.rows)
-                    return AgenticResponse(
+                    answer = await self._format_answer(clean_question, state.execution_result.rows)
+                    response = AgenticResponse(
                         answer=answer,
                         strategy_used=state.strategy.value,
                         attempts=attempt,
@@ -163,74 +202,88 @@ class Supervisor:
                         trace_id=state.trace_id,
                         specialist_log=state.history,
                         cypher_attempts=state.cypher_attempts,
+                        conversation_id=conv_id,
                     )
+                    # Cache + checkpoint
+                    await self._cache.set(cache_key, {
+                        "answer": answer,
+                        "strategy_used": state.strategy.value,
+                        "attempts": attempt,
+                        "success": True,
+                        "trace_id": state.trace_id,
+                        "specialist_log": state.history,
+                        "cypher_attempts": state.cypher_attempts,
+                    }, settings.cache_response_ttl)
+                    await self._conversation.save_turn(conv_id, state, answer)
+                    return response
 
                 # ── Empty results — try alternative approaches gradually ──
-                empty_result = await self._handle_empty_results(state, question)
+                empty_result = await self._handle_empty_results(state, clean_question)
                 if empty_result is not None:
-                    # Either gave up or exhausted retries — return
+                    empty_result.conversation_id = conv_id
+                    await self._conversation.save_turn(conv_id, state, empty_result.answer)
                     return empty_result
-                # Otherwise, the loop continues with the next attempt
                 continue
 
             # 4) Query failed (execution error) — reflect
             await self._specialists["reflection"].run(state, self._max_attempts)
 
             if not state.reflection.should_retry:
-                # Give up with fallback — clean message only
-                return AgenticResponse(
-                    answer=state.reflection.fallback_answer or (
-                        f"I wasn't able to answer \"{question}\" at this time. "
-                        "Please try rephrasing your question."
-                    ),
+                fallback_answer = state.reflection.fallback_answer or (
+                    f"I wasn't able to answer \"{clean_question}\" at this time. "
+                    "Please try rephrasing your question."
+                )
+                response = AgenticResponse(
+                    answer=fallback_answer,
                     strategy_used=state.strategy.value,
                     attempts=attempt,
                     success=False,
                     trace_id=state.trace_id,
                     specialist_log=state.history,
                     cypher_attempts=state.cypher_attempts,
+                    conversation_id=conv_id,
                 )
+                await self._conversation.save_turn(conv_id, state, fallback_answer)
+                return response
 
             # Apply retry adjustments
             self._apply_retry_strategy(state)
 
         # Safety fallback
-        return AgenticResponse(
-            answer=(
-                f"I could not determine an answer for \"{question}\" "
-                f"after {self._max_attempts} attempts. "
-                "Please try a different phrasing."
-            ),
+        fallback_answer = (
+            f"I could not determine an answer for \"{clean_question}\" "
+            f"after {self._max_attempts} attempts. "
+            "Please try a different phrasing."
+        )
+        response = AgenticResponse(
+            answer=fallback_answer,
             strategy_used=state.strategy.value,
             attempts=self._max_attempts,
             success=False,
             trace_id=state.trace_id,
             specialist_log=state.history,
             cypher_attempts=state.cypher_attempts,
+            conversation_id=conv_id,
         )
+        await self._conversation.save_turn(conv_id, state, fallback_answer)
+        return response
 
     # ── Empty-result handler (gradual retry) ─────────────────────────────
 
     async def _handle_empty_results(
         self, state: AgentState, question: str,
     ) -> AgenticResponse | None:
-        """Handle queries that succeeded but returned 0 rows.
-
-        Returns ``None`` to signal the outer loop should continue retrying,
-        or an ``AgenticResponse`` when we've exhausted retries.
-        """
+        """Handle queries that succeeded but returned 0 rows."""
         logger.info(
             "[%s] Query returned 0 rows (empty retry %d/%d)",
             state.trace_id, state.empty_retries_used + 1, self._max_empty_retries,
         )
 
-        # Record the empty query for context
         state.previous_empty_queries.append({
             "query": state.generated_query.query,
             "reasoning": state.generated_query.reasoning,
         })
 
-        # Check if we've exhausted empty retries
         if state.empty_retries_used >= self._max_empty_retries:
             return AgenticResponse(
                 answer=(
@@ -240,7 +293,7 @@ class Supervisor:
                 ),
                 strategy_used=state.strategy.value,
                 attempts=state.attempt_number,
-                success=True,  # query worked, data just doesn't exist
+                success=True,
                 trace_id=state.trace_id,
                 specialist_log=state.history,
                 cypher_attempts=state.cypher_attempts,
@@ -248,7 +301,6 @@ class Supervisor:
 
         state.empty_retries_used += 1
 
-        # Ask reflection to analyze schema and suggest next approach
         await self._specialists["reflection"].run_empty_result(
             state, self._max_empty_retries,
         )
@@ -266,7 +318,6 @@ class Supervisor:
                 cypher_attempts=state.cypher_attempts,
             )
 
-        # Re-run from planning onward (schema/discoveries already cached)
         logger.info(
             "[%s] Empty-result retry: %s",
             state.trace_id, state.reflection.next_approach[:80],
@@ -274,7 +325,6 @@ class Supervisor:
         success = await self._execute_sequence(state, _EMPTY_RETRY_SEQUENCE)
 
         if success and state.execution_result.success and state.execution_result.rows:
-            # Got data on the retry!
             answer = await self._format_answer(question, state.execution_result.rows)
             return AgenticResponse(
                 answer=answer,
@@ -286,13 +336,31 @@ class Supervisor:
                 cypher_attempts=state.cypher_attempts,
             )
 
-        # Still empty or failed — let the outer loop handle the next attempt
         return None
 
     # ── Strategy decision ────────────────────────────────────────────────
 
-    async def _decide_strategy(self, question: str) -> SupervisorDecision:
-        prompt = _STRATEGY_PROMPT.format(question=question)
+    async def _decide_strategy(self, question: str, state: AgentState) -> SupervisorDecision:
+        # Check strategy cache
+        s_key = strategy_key(question)
+        cached = await self._cache.get(s_key)
+        if cached:
+            try:
+                return SupervisorDecision(
+                    strategy=StrategyType(cached["strategy"]),
+                    reasoning=cached.get("reasoning", "cached"),
+                )
+            except Exception:
+                pass
+
+        # Build conversation context
+        conv_context = ""
+        if state.previous_context:
+            conv_context = "## Conversation History\n"
+            for turn in state.previous_context:
+                conv_context += f"- Q: {turn['question'][:100]}\n  A: {turn['answer'][:100]}\n"
+
+        prompt = _STRATEGY_PROMPT.format(question=question, conversation_context=conv_context)
         try:
             response = await self._llm.ainvoke(prompt)
             text = extract_text(response)
@@ -307,11 +375,19 @@ class Supervisor:
                 "aggregation": StrategyType.AGGREGATION,
             }
             strategy = strategy_map.get(data.get("strategy", ""), StrategyType.DISCOVERY_FIRST)
-            return SupervisorDecision(
+            decision = SupervisorDecision(
                 strategy=strategy,
                 reasoning=data.get("reasoning", ""),
                 specialist_sequence=list(_STRATEGY_SEQUENCES.get(strategy, [])),
             )
+
+            # Cache strategy decision
+            await self._cache.set(s_key, {
+                "strategy": strategy.value,
+                "reasoning": decision.reasoning,
+            }, settings.cache_strategy_ttl)
+
+            return decision
         except Exception as exc:
             logger.warning("Strategy decision failed: %s — defaulting to discovery_first", exc)
             return SupervisorDecision(
@@ -332,7 +408,6 @@ class Supervisor:
             if not result.success:
                 logger.warning("[%s] %s failed: %s",
                                state.trace_id, specialist_name, result.error)
-                # For discovery failures, continue (non-critical)
                 if specialist_name == "discovery":
                     continue
                 return False
@@ -340,7 +415,6 @@ class Supervisor:
         return True
 
     async def _format_answer(self, question: str, rows: list[dict]) -> str:
-        # Truncate results for LLM context
         results_text = json.dumps(rows[:20], indent=2, default=str)
         if len(results_text) > 3000:
             results_text = results_text[:3000] + "\n... (truncated)"
@@ -365,3 +439,8 @@ class Supervisor:
             state.schema_selection.node_labels.clear()
             state.schema_selection.relationship_types.clear()
         # ADD_TRAVERSALS: keep state as-is, let planner adjust
+
+    async def shutdown(self) -> None:
+        """Cleanup cache and conversation stores."""
+        await self._cache.close()
+        await self._conversation.close()

@@ -138,3 +138,5 @@ class AgenticResponse:
     trace_id: str
     specialist_log: list[dict[str, Any]] = field(default_factory=list)
     cypher_attempts: list[dict[str, Any]] = field(default_factory=list)
+    conversation_id: str | None = None
+    from_cache: bool = False

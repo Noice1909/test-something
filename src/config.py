@@ -35,11 +35,64 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
 
     # ── Cache ──
-    cache_backend: str = "memory"  # "memory" | "redis" | "sqlite"
+    cache_backend: str = "memory"  # "memory" | "sqlite" | "redis"
+    cache_redis_url: str = "redis://localhost:6379/0"
+    cache_sqlite_path: str = "cache.db"
+    cache_response_ttl: int = 300
+    cache_strategy_ttl: int = 600
+    cache_max_size: int = 1000
 
     # ── Server ──
     server_host: str = "0.0.0.0"
     server_port: int = 8001
+
+    # ── Logging ──
+    log_level: str = "INFO"
+    log_format: str = "json"  # "json" | "text"
+
+    # ── CORS ──
+    cors_allowed_origins: str = "*"  # comma-separated origins
+
+    # ── Auth ──
+    auth_api_key: str = ""  # if set, X-API-Key header required; empty = disabled
+
+    # ── Rate limiting ──
+    rate_limit_default: str = "10/minute"
+    rate_limit_storage: str = "memory"  # "memory" | "redis://..."
+
+    # ── Request timeout ──
+    request_timeout_seconds: int = 120
+
+    # ── Circuit breakers ──
+    cb_neo4j_fail_max: int = 5
+    cb_neo4j_reset_timeout: int = 30
+    cb_llm_fail_max: int = 3
+    cb_llm_reset_timeout: int = 60
+
+    # ── Neo4j connection pool ──
+    neo4j_pool_max_size: int = 100
+    neo4j_pool_acquisition_timeout: float = 60.0
+    neo4j_max_connection_lifetime: int = 3600
+
+    # ── Concurrency ──
+    max_concurrent_requests: int = 50
+    max_concurrent_llm_calls: int = 10
+
+    # ── LLM context window ──
+    llm_context_window: int = 8192
+    llm_response_reserve: float = 0.2
+
+    # ── Database health monitor ──
+    db_health_check_interval: int = 15
+    db_max_consecutive_failures: int = 3
+    db_reconnect_backoff_max: int = 120
+
+    # ── Checkpointing ──
+    checkpoint_enabled: bool = True
+    checkpoint_backend: str = "memory"  # "memory" | "sqlite" | "redis"
+    checkpoint_ttl: int = 1800
+    checkpoint_max_conversations: int = 10000
+    checkpoint_max_turns: int = 20
 
     # ── Derived helpers ──
     @property
