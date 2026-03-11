@@ -1,6 +1,6 @@
 """Query Generation Specialist — creates database-specific queries.
 
-Loads the Cypher syntax skill from .agent/skills/cypher_syntax/SKILL.md and
+Loads the Cypher syntax skill from skills/cypher_syntax/SKILL.md and
 injects the reference into the LLM prompt so it can generate syntactically
 correct queries for all common patterns (aggregation, traversal, filtering, etc.).
 """
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Load Cypher syntax skill ─────────────────────────────────────────────────
 
-_SKILL_PATH = Path(__file__).resolve().parents[2] / ".." / ".agent" / "skills" / "cypher_syntax" / "SKILL.md"
+_SKILL_PATH = Path(__file__).resolve().parents[2] / ".." / "skills" / "cypher_syntax" / "SKILL.md"
 
 
 def _load_cypher_skill() -> str:
