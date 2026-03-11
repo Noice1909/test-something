@@ -23,15 +23,15 @@ async def count_nodes_by_label(db: AbstractDatabase, *, label: str, **_: Any) ->
 
 
 async def count_relationships(db: AbstractDatabase, **_: Any) -> int:
-    rows = await db.execute_read("MATCH ()-[r]->() RETURN count(r) AS cnt")
-    return rows[0]["cnt"] if rows else 0
+    rows = await db.execute_read("MATCH ()-[r]-() RETURN count(r)/2 AS cnt")
+    return int(rows[0]["cnt"]) if rows else 0
 
 
 async def count_relationships_by_type(db: AbstractDatabase, *, rel_type: str, **_: Any) -> int:
     rows = await db.execute_read(
-        f"MATCH ()-[r:`{rel_type}`]->() RETURN count(r) AS cnt"
+        f"MATCH ()-[r:`{rel_type}`]-() RETURN count(r)/2 AS cnt"
     )
-    return rows[0]["cnt"] if rows else 0
+    return int(rows[0]["cnt"]) if rows else 0
 
 
 async def count_nodes_with_property(
@@ -74,8 +74,8 @@ async def get_node_degree_distribution(db: AbstractDatabase, **_: Any) -> list[d
 
 async def get_relationship_distribution(db: AbstractDatabase, **_: Any) -> list[dict]:
     return await db.execute_read(
-        "MATCH ()-[r]->() "
-        "RETURN type(r) AS rel_type, count(*) AS cnt ORDER BY cnt DESC"
+        "MATCH ()-[r]-() "
+        "RETURN type(r) AS rel_type, count(*)/2 AS cnt ORDER BY cnt DESC"
     )
 
 

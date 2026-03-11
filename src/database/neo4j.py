@@ -198,7 +198,8 @@ class Neo4jDatabase(AbstractDatabase):
         # Gather relationship patterns
         rel_patterns: list[dict[str, str]] = []
         rows = await self.execute_read(
-            "MATCH (a)-[r]->(b) "
+            "MATCH (a)-[r]-(b) "
+            "WHERE id(a) < id(b) "
             "RETURN DISTINCT labels(a)[0] AS from_label, type(r) AS rel_type, "
             "labels(b)[0] AS to_label LIMIT 200"
         )

@@ -48,8 +48,8 @@ async def get_node_labels_with_counts(db: AbstractDatabase, **_: Any) -> list[di
 async def get_relationship_types_with_counts(db: AbstractDatabase, **_: Any) -> list[dict]:
     return await db.execute_read(
         "CALL db.relationshipTypes() YIELD relationshipType AS type "
-        "CALL { WITH type MATCH ()-[r]->() WHERE type(r) = type RETURN count(r) AS cnt } "
-        "RETURN type, cnt ORDER BY cnt DESC"
+        "CALL { WITH type MATCH ()-[r]-() WHERE type(r) = type RETURN count(r)/2 AS cnt } "
+        "RETURN type, toInteger(cnt) AS cnt ORDER BY cnt DESC"
     )
 
 
