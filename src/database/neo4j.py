@@ -195,20 +195,89 @@ class Neo4jDatabase(AbstractDatabase):
             )
             label_properties[label] = [r["k"] for r in rows]
 
-        # Gather relationship patterns
-        rel_patterns: list[dict[str, str]] = []
+        # Gather relationship patterns with DIRECTED queries
+        # Use directed match to capture actual semantic direction, not arbitrary node IDs
         rows = await self.execute_read(
-            "MATCH (a)-[r]-(b) "
-            "WHERE id(a) < id(b) "
-            "RETURN DISTINCT labels(a)[0] AS from_label, type(r) AS rel_type, "
-            "labels(b)[0] AS to_label LIMIT 200"
+            "MATCH (a)-[r]->(b) "
+            "WITH labels(a)[0] AS from_label, type(r) AS rel_type, "
+            "labels(b)[0] AS to_label, count(*) AS cnt "
+            "RETURN from_label, rel_type, to_label, cnt "
+            "ORDER BY cnt DESC "
+            "LIMIT 200"
         )
+
+        # Build map of relationships with forward/reverse counts
+        rel_map: dict[tuple[str, str, str], dict[str, Any]] = {}
         for row in rows:
-            rel_patterns.append({
-                "from": row["from_label"],
-                "type": row["rel_type"],
-                "to": row["to_label"],
-            })
+            from_l = row["from_label"]
+            rel_t = row["rel_type"]
+            to_l = row["to_label"]
+            cnt = row["cnt"]
+
+            fwd_key = (from_l, rel_t, to_l)
+            rev_key = (to_l, rel_t, from_l)
+
+            if fwd_key not in rel_map:
+                rel_map[fwd_key] = {
+                    "from": from_l,
+                    "type": rel_t,
+                    "to": to_l,
+                    "fwd_count": cnt,
+                    "rev_count": 0
+                }
+
+            # Mark reverse count if reverse pattern already seen
+            # Skip self-referential relationships (fwd_key == rev_key)
+            if rev_key in rel_map and fwd_key != rev_key:
+                rel_map[rev_key]["rev_count"] = cnt
+
+        # Determine directionality based on count ratios
+        rel_patterns: list[dict[str, Any]] = []
+        processed: set[frozenset] = set()
+
+        for (from_l, rel_t, to_l), stats in rel_map.items():
+            # Skip if we already processed the reverse
+            pair = frozenset([(from_l, rel_t, to_l), (to_l, rel_t, from_l)])
+            if pair in processed:
+                continue
+            processed.add(pair)
+
+            fwd = stats["fwd_count"]
+            rev = stats["rev_count"]
+
+            # Decision logic:
+            # - Ratio > 10:1 → single direction
+            # - Ratio 1:10 to 10:1 → bidirectional
+            if rev == 0 or fwd / rev > 10:
+                # Strong forward direction only
+                rel_patterns.append({
+                    "from": from_l,
+                    "type": rel_t,
+                    "to": to_l,
+                    "bidirectional": False
+                })
+            elif fwd == 0 or rev / fwd > 10:
+                # Strong reverse direction only
+                rel_patterns.append({
+                    "from": to_l,
+                    "type": rel_t,
+                    "to": from_l,
+                    "bidirectional": False
+                })
+            else:
+                # Bidirectional - add both directions with flag
+                rel_patterns.append({
+                    "from": from_l,
+                    "type": rel_t,
+                    "to": to_l,
+                    "bidirectional": True
+                })
+                rel_patterns.append({
+                    "from": to_l,
+                    "type": rel_t,
+                    "to": from_l,
+                    "bidirectional": True
+                })
 
         self._schema_cache = {
             "labels": labels,
@@ -218,9 +287,10 @@ class Neo4jDatabase(AbstractDatabase):
             "relationship_patterns": rel_patterns,
         }
         self._schema_ts = now
+        bidirectional_count = sum(1 for p in rel_patterns if p.get("bidirectional", False))
         logger.info(
-            "Schema refreshed: %d labels, %d rel types, %d props",
-            len(labels), len(rel_types), len(prop_keys),
+            "Schema refreshed: %d labels, %d rel types, %d props, %d patterns (%d bidirectional)",
+            len(labels), len(rel_types), len(prop_keys), len(rel_patterns), bidirectional_count,
         )
         return self._schema_cache
 

@@ -83,6 +83,8 @@ Relationship Patterns: {patterns}
 7. For "most" / "top" questions use ORDER BY aggregate DESC LIMIT N.
 8. Always alias aggregations (e.g. count(m) AS movie_count).
 9. Use the "Relationship Patterns" above to determine traversal direction.
+   - Patterns marked [BIDIRECTIONAL] can be traversed either way.
+   - For single-direction patterns, you MUST use the exact direction shown.
 
 Return a JSON object with:
 - "query": the Cypher query string
@@ -114,9 +116,10 @@ class QueryGenerationSpecialist:
                 if props:
                     label_props += f"\n  {label}: {', '.join(props)}"
 
-            # Format patterns
+            # Format patterns with bidirectional indicators
             patterns = "\n".join(
-                f"  ({p['from']})-[{p['type']}]->({p['to']})"
+                f"  ({p['from']})-[{p['type']}]->({p['to']})" +
+                (" [BIDIRECTIONAL]" if p.get("bidirectional", False) else "")
                 for p in schema.get("relationship_patterns", [])
                 if p["from"] in state.schema_selection.node_labels
                 or p["to"] in state.schema_selection.node_labels
