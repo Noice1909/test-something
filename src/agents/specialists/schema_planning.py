@@ -47,6 +47,8 @@ Labels: {labels}
 Relationship Types: {rel_types}
 Relationship Patterns:
 {patterns}
+Label Properties:
+{label_properties}
 
 ## Strategy Options (Task 2)
 - DIRECT: Simple match on a single label (e.g. "find all Movies")
@@ -62,6 +64,9 @@ DESCRIBE, SUGGEST, SUMMARIZE, TREND, RELATE, INDIRECT
 
 ## Rules
 - Prefer simpler strategies (DIRECT, ONE_HOP) when possible
+- If the question asks about a specific property or detail of a known entity, \
+check whether the answer is in the node's own properties (see Label Properties). \
+If so, select DIRECT strategy with no relationship types needed.
 - Only include labels/relationships that are actually needed
 - The intent should reflect what the user wants to know
 
@@ -103,12 +108,19 @@ class SchemaPlanningSpecialist:
                 for p in schema.get("relationship_patterns", [])[:50]
             ) or "None"
 
+            label_props_text = "\n".join(
+                f"  {label}: {', '.join(props)}"
+                for label, props in schema.get("label_properties", {}).items()
+                if props
+            ) or "None"
+
             prompt = _SCHEMA_PLANNING_PROMPT.format(
                 question=state.question,
                 discoveries=disc_text,
                 labels=", ".join(schema.get("labels", [])),
                 rel_types=", ".join(schema.get("relationship_types", [])),
                 patterns=patterns_text,
+                label_properties=label_props_text,
             )
 
             response = await self._llm.ainvoke(prompt)

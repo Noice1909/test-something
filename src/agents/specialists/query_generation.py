@@ -15,7 +15,7 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
-from src.agents.base import GeneratedQuery, SpecialistResult
+from src.agents.base import GeneratedQuery, SpecialistResult, StrategyType
 from src.agents.state import AgentState
 from src.agents.utils import extract_text
 from src.database.abstract import AbstractDatabase
@@ -85,6 +85,13 @@ Relationship Patterns: {patterns}
 9. Use the "Relationship Patterns" above to determine traversal direction.
    - Patterns marked [BIDIRECTIONAL] can be traversed either way.
    - For single-direction patterns, you MUST use the exact direction shown.
+10. For PROPERTY_LOOKUP or ENTITY_DETAIL questions: prefer a simple MATCH with \
+WHERE on the entity's known identifier, and RETURN the specific property. Check \
+"Label Properties" above — the answer may be in the node's own properties \
+without any relationship traversal.
+11. When "Label Properties" lists the property the user is asking about, generate \
+a simple query like: MATCH (n:Label) WHERE n.name = $name RETURN n.property \
+LIMIT 1. Do NOT add unnecessary relationship traversals.
 
 Return a JSON object with:
 - "query": the Cypher query string
@@ -104,10 +111,49 @@ class QueryGenerationSpecialist:
         self._llm = llm
         self._tools = tools
 
+    @staticmethod
+    def _ensure_schema_context(state: AgentState, schema: dict[str, Any]) -> None:
+        """Populate schema_selection and query_plan from discoveries when
+        schema_planning was skipped (PROPERTY_LOOKUP, ENTITY_DETAIL)."""
+        if not state.schema_selection.node_labels and state.discoveries:
+            discovered_labels = list(dict.fromkeys(
+                d.label for d in state.discoveries
+                if d.label and d.label != "Unknown"
+            ))
+            valid_labels = set(schema.get("labels", []))
+            state.schema_selection.node_labels = [
+                lb for lb in discovered_labels if lb in valid_labels
+            ]
+            if state.schema_selection.node_labels:
+                relevant_rels = {
+                    p["type"]
+                    for p in schema.get("relationship_patterns", [])
+                    if (p["from"] in state.schema_selection.node_labels
+                        or p["to"] in state.schema_selection.node_labels)
+                }
+                state.schema_selection.relationship_types = list(relevant_rels)
+            logger.info(
+                "Auto-populated schema from discoveries: labels=%s, rels=%s",
+                state.schema_selection.node_labels,
+                state.schema_selection.relationship_types,
+            )
+
+        if not state.query_plan.intent and state.discoveries:
+            _intent_map = {
+                StrategyType.PROPERTY_LOOKUP: "FIND",
+                StrategyType.ENTITY_DETAIL: "DESCRIBE",
+            }
+            state.query_plan.intent = _intent_map.get(state.strategy, "FIND")
+            state.query_plan.reasoning = (
+                f"Auto-inferred from strategy {state.strategy.value}"
+            )
+
     async def run(self, state: AgentState) -> SpecialistResult:
         t0 = time.time()
         try:
             schema = await self._db.get_schema()
+
+            self._ensure_schema_context(state, schema)
 
             # Format label properties
             label_props = ""
