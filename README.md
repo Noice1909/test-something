@@ -4,12 +4,16 @@
 
 ## Architecture
 
+> [!NOTE]
+> Read the detailed technical architecture, agent workflow, and system autonomy evaluation in [ARCHITECTURE.md](ARCHITECTURE.md) along with visual diagrams.
+
 ```
 User Question → Supervisor (LLM) → Specialist Agents → Neo4j → Answer
 ```
 
 The **Supervisor** analyzes each question, picks a strategy, coordinates
 specialist agents, and retries on failure — all driven by LLM reasoning.
+
 
 ### Specialists
 

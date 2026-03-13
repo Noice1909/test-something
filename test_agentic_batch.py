@@ -102,7 +102,7 @@ async def run_test(question_data: dict, client: httpx.AsyncClient) -> dict:
         resp = await client.post(
             f"{BASE_URL}/api/v1/agentic/chat",
             json={"question": q},
-            timeout=120,
+            timeout=300,
         )
         elapsed = time.time() - t0
         data = resp.json()

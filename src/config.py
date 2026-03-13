@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     rate_limit_storage: str = "memory"  # "memory" | "redis://..."
 
     # ── Request timeout ──
-    request_timeout_seconds: int = 120
+    request_timeout_seconds: int = 300
 
     # ── Circuit breakers ──
     cb_neo4j_fail_max: int = 5
