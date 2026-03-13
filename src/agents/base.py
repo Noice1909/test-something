@@ -17,6 +17,14 @@ class StrategyType(str, enum.Enum):
     DIRECT_QUERY = "direct_query"
     SCHEMA_EXPLORATION = "schema_exploration"
     AGGREGATION = "aggregation"
+    # Narrowed strategies for faster routing
+    PROPERTY_LOOKUP = "property_lookup"
+    SIMPLE_COUNT = "simple_count"
+    LABEL_LIST = "label_list"
+    ENTITY_DETAIL = "entity_detail"
+    RELATIONSHIP_QUERY = "relationship_query"
+    PATH_QUERY = "path_query"
+    COMPARISON = "comparison"
 
 
 class QueryComplexity(str, enum.Enum):
@@ -80,6 +88,19 @@ class QueryPlan:
     strategy: QueryComplexity = QueryComplexity.DIRECT
     intent: str = ""  # LIST, COUNT, FIND, EXPLORE, COMPARE, RANK, etc.
     reasoning: str = ""
+    filters: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class SchemaPlan:
+    """Combined schema selection + query plan from merged specialist."""
+
+    node_labels: list[str] = field(default_factory=list)
+    relationship_types: list[str] = field(default_factory=list)
+    schema_reasoning: str = ""
+    strategy: QueryComplexity = QueryComplexity.DIRECT
+    intent: str = ""
+    plan_reasoning: str = ""
     filters: dict[str, Any] = field(default_factory=dict)
 
 

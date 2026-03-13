@@ -1,9 +1,10 @@
-"""Supervisor — main orchestrator with LLM-based strategy decision-making."""
+"""Supervisor — main orchestrator with hybrid strategy decision-making."""
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -17,6 +18,7 @@ from src.agents.base import (
 )
 from src.agents.state import AgentState
 from src.agents.specialists.discovery import DiscoverySpecialist
+from src.agents.specialists.schema_planning import SchemaPlanningSpecialist
 from src.agents.specialists.schema_reasoning import SchemaReasoningSpecialist
 from src.agents.specialists.query_planning import QueryPlanningSpecialist
 from src.agents.specialists.query_generation import QueryGenerationSpecialist
@@ -44,19 +46,86 @@ question and choose the best strategy.
 {conversation_context}
 
 ## Available Strategies
-1. discovery_first — Use when the question contains unknown terms, acronyms, \
-   or ambiguous entities that need to be found in the database first.
-2. direct_query — Use when entities are clearly mentioned and easy to match \
+1. discovery_first — Unknown terms, acronyms, or ambiguous entities that need \
+   to be found in the database first.
+2. direct_query — Entities are clearly mentioned and easy to match \
    (e.g. "show Application named ABC").
-3. schema_exploration — Use when asking about database structure, relationships, \
-   or connectivity (e.g. "what's connected to Domain nodes?").
-4. aggregation — Use for count/sum/avg queries (e.g. "how many applications?").
+3. schema_exploration — Questions about database structure, relationships, \
+   or connectivity (e.g. "what labels exist?").
+4. aggregation — Ranking, top-N, most/least queries with ordering \
+   (e.g. "top 5 actors by movie count", "which director has the most movies").
+5. property_lookup — Looking up a specific entity by a known property value \
+   (e.g. "show application named X", "find movie titled Inception").
+6. simple_count — Simple count queries with no entity discovery needed \
+   (e.g. "how many applications are there?", "total number of movies").
+7. label_list — List or enumerate all entities of a type \
+   (e.g. "list all domains", "show all applications", "what are the genres?").
+8. entity_detail — Describe or get details about a specific entity \
+   (e.g. "tell me about Tom Hanks", "describe the CNAPP application").
+9. relationship_query — Questions about what connects to or depends on something \
+   (e.g. "what depends on Domain X?", "what is linked to Application Y?").
+10. path_query — Find how two entities are connected or the path between them \
+    (e.g. "how is Person X connected to Movie Y?", "shortest path between A and B").
+11. comparison — Compare two or more entities \
+    (e.g. "compare Application A and Application B").
 
 Return a JSON object with:
-- "strategy": one of discovery_first, direct_query, schema_exploration, aggregation
+- "strategy": one of the strategy names above (e.g. "discovery_first", "simple_count")
 - "reasoning": brief explanation of why
 
 Return ONLY the JSON object:"""
+
+
+# ── Rule-based strategy classifier ────────────────────────────────────────────
+
+# Ordered most-specific first; checked sequentially
+_STRATEGY_RULES: list[tuple[StrategyType, re.Pattern[str]]] = [
+    (StrategyType.SCHEMA_EXPLORATION, re.compile(
+        r"\b(schema|structure|what labels|what relationships|what types|database structure|what nodes)\b", re.I)),
+    (StrategyType.PATH_QUERY, re.compile(
+        r"\b(path between|how .{1,30} connected to|shortest path|route from .{1,30} to)\b", re.I)),
+    (StrategyType.COMPARISON, re.compile(
+        r"\b(compare|versus|vs\.?|difference between|differ from)\b", re.I)),
+    (StrategyType.AGGREGATION, re.compile(
+        r"\b(most|top \d|average|sum of|highest|lowest|rank|best|worst|least|order by)\b", re.I)),
+    (StrategyType.SIMPLE_COUNT, re.compile(
+        r"\b(how many|count of|number of|total number)\b", re.I)),
+    (StrategyType.PROPERTY_LOOKUP, re.compile(
+        r"\b(named|called|with name|titled|where name)\b", re.I)),
+    (StrategyType.ENTITY_DETAIL, re.compile(
+        r"\b(describe|tell me about|details of|detail of|info about|information about)\b", re.I)),
+    (StrategyType.RELATIONSHIP_QUERY, re.compile(
+        r"\b(connected to|relates to|linked to|depends on|belongs to|associated with|runs on|part of)\b", re.I)),
+    (StrategyType.LABEL_LIST, re.compile(
+        r"\b(list all|show all|get all|show me all|what are the|which .{0,20} are)\b", re.I)),
+]
+
+
+def _classify_strategy(question: str) -> tuple[StrategyType, str, str]:
+    """Classify question using keyword heuristics.
+
+    Returns ``(strategy, reasoning, confidence)`` where confidence is
+    ``"high"`` when exactly one pattern matches, or ``"low"`` when zero
+    or multiple conflicting patterns match.
+    """
+    matches: list[tuple[StrategyType, str]] = []
+    for strategy, pattern in _STRATEGY_RULES:
+        m = pattern.search(question)
+        if m:
+            matches.append((strategy, m.group(0)))
+
+    if len(matches) == 1:
+        strat, matched = matches[0]
+        return strat, f"Matched pattern: '{matched}'", "high"
+
+    if len(matches) > 1:
+        # Multiple matches — pick the first (most-specific) but mark low confidence
+        strat, matched = matches[0]
+        others = ", ".join(s.value for s, _ in matches[1:])
+        return strat, f"Multiple matches: '{matched}' (also: {others})", "low"
+
+    # No matches
+    return StrategyType.DISCOVERY_FIRST, "No pattern matched", "low"
 
 _ANSWER_PROMPT = """\
 You are answering a user's question using graph database query results. \
@@ -83,27 +152,46 @@ Answer:"""
 
 # Maps strategy → ordered specialist sequence
 _STRATEGY_SEQUENCES: dict[StrategyType, list[str]] = {
+    # Original strategies (now using merged "schema_planning")
     StrategyType.DISCOVERY_FIRST: [
-        "discovery", "schema_reasoning", "query_planning",
-        "query_generation", "execution",
+        "discovery", "schema_planning", "query_generation", "execution",
     ],
     StrategyType.DIRECT_QUERY: [
-        "schema_reasoning", "query_planning",
-        "query_generation", "execution",
+        "schema_planning", "query_generation", "execution",
     ],
     StrategyType.SCHEMA_EXPLORATION: [
-        "schema_reasoning", "discovery",
-        "query_planning", "query_generation", "execution",
+        "schema_planning", "discovery", "query_generation", "execution",
     ],
     StrategyType.AGGREGATION: [
-        "discovery", "schema_reasoning", "query_planning",
-        "query_generation", "execution",
+        "discovery", "schema_planning", "query_generation", "execution",
+    ],
+    # Narrowed strategies — shorter sequences for specific query types
+    StrategyType.PROPERTY_LOOKUP: [
+        "discovery", "query_generation", "execution",
+    ],
+    StrategyType.SIMPLE_COUNT: [
+        "schema_planning", "query_generation", "execution",
+    ],
+    StrategyType.LABEL_LIST: [
+        "schema_planning", "query_generation", "execution",
+    ],
+    StrategyType.ENTITY_DETAIL: [
+        "discovery", "query_generation", "execution",
+    ],
+    StrategyType.RELATIONSHIP_QUERY: [
+        "discovery", "schema_planning", "query_generation", "execution",
+    ],
+    StrategyType.PATH_QUERY: [
+        "discovery", "schema_planning", "query_generation", "execution",
+    ],
+    StrategyType.COMPARISON: [
+        "discovery", "schema_planning", "query_generation", "execution",
     ],
 }
 
-# For empty-result retries, re-run from planning onward (skip discovery/schema)
+# For empty-result retries, re-run from merged planning onward
 _EMPTY_RETRY_SEQUENCE: list[str] = [
-    "query_planning", "query_generation", "execution",
+    "schema_planning", "query_generation", "execution",
 ]
 
 
@@ -127,11 +215,13 @@ class Supervisor:
         # Create specialist instances
         self._specialists: dict[str, Any] = {
             "discovery": DiscoverySpecialist(db, llm, tools),
-            "schema_reasoning": SchemaReasoningSpecialist(db, llm, tools),
-            "query_planning": QueryPlanningSpecialist(db, llm, tools),
+            "schema_planning": SchemaPlanningSpecialist(db, llm, tools),
             "query_generation": QueryGenerationSpecialist(db, llm, tools),
             "execution": ExecutionSpecialist(db, tools),
             "reflection": ReflectionSpecialist(db, llm, tools),
+            # Keep old specialists for backward compat
+            "schema_reasoning": SchemaReasoningSpecialist(db, llm, tools),
+            "query_planning": QueryPlanningSpecialist(db, llm, tools),
         }
 
         # Caching and conversation
@@ -341,7 +431,8 @@ class Supervisor:
     # ── Strategy decision ────────────────────────────────────────────────
 
     async def _decide_strategy(self, question: str, state: AgentState) -> SupervisorDecision:
-        # Check strategy cache
+        """Hybrid strategy: rule-based for clear queries, LLM fallback for ambiguous."""
+        # 1. Check strategy cache
         s_key = strategy_key(question)
         cached = await self._cache.get(s_key)
         if cached:
@@ -353,7 +444,30 @@ class Supervisor:
             except Exception as exc:
                 logger.debug("Ignoring malformed cached strategy, will recompute: %s", exc)
 
-        # Build conversation context
+        # 2. Try rule-based classification (instant, ~0ms)
+        strategy, reasoning, confidence = _classify_strategy(question)
+
+        if confidence == "high":
+            logger.info("[%s] Rule-based strategy: %s (%s)", state.trace_id, strategy.value, reasoning)
+            decision = SupervisorDecision(
+                strategy=strategy,
+                reasoning=f"[rule] {reasoning}",
+                specialist_sequence=list(_STRATEGY_SEQUENCES.get(strategy, [])),
+            )
+            await self._cache.set(s_key, {
+                "strategy": strategy.value,
+                "reasoning": decision.reasoning,
+            }, settings.cache_strategy_ttl)
+            return decision
+
+        # 3. Low confidence — fall back to LLM with all 11 strategies
+        logger.info("[%s] Rule-based uncertain (%s), falling back to LLM", state.trace_id, reasoning)
+        return await self._llm_decide_strategy(question, state, s_key)
+
+    async def _llm_decide_strategy(
+        self, question: str, state: AgentState, cache_key: str,
+    ) -> SupervisorDecision:
+        """LLM fallback for ambiguous queries — uses full 11-strategy prompt."""
         conv_context = ""
         if state.previous_context:
             conv_context = "## Conversation History\n"
@@ -368,28 +482,27 @@ class Supervisor:
             end = text.rindex("}") + 1
             data = json.loads(text[start:end])
 
-            strategy_map = {
-                "discovery_first": StrategyType.DISCOVERY_FIRST,
-                "direct_query": StrategyType.DIRECT_QUERY,
-                "schema_exploration": StrategyType.SCHEMA_EXPLORATION,
-                "aggregation": StrategyType.AGGREGATION,
-            }
-            strategy = strategy_map.get(data.get("strategy", ""), StrategyType.DISCOVERY_FIRST)
+            # Map all 11 strategies
+            strategy_str = data.get("strategy", "discovery_first")
+            try:
+                strategy = StrategyType(strategy_str)
+            except ValueError:
+                strategy = StrategyType.DISCOVERY_FIRST
+
             decision = SupervisorDecision(
                 strategy=strategy,
-                reasoning=data.get("reasoning", ""),
+                reasoning=f"[llm] {data.get('reasoning', '')}",
                 specialist_sequence=list(_STRATEGY_SEQUENCES.get(strategy, [])),
             )
 
-            # Cache strategy decision
-            await self._cache.set(s_key, {
+            await self._cache.set(cache_key, {
                 "strategy": strategy.value,
                 "reasoning": decision.reasoning,
             }, settings.cache_strategy_ttl)
 
             return decision
         except Exception as exc:
-            logger.warning("Strategy decision failed: %s — defaulting to discovery_first", exc)
+            logger.warning("LLM strategy decision failed: %s — defaulting to discovery_first", exc)
             return SupervisorDecision(
                 strategy=StrategyType.DISCOVERY_FIRST,
                 reasoning=f"Default (LLM error: {exc})",

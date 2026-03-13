@@ -87,6 +87,13 @@ class Settings(BaseSettings):
     db_max_consecutive_failures: int = 3
     db_reconnect_backoff_max: int = 120
 
+    # ── Discovery optimization ──
+    discovery_max_results_per_tool: int = 10
+    discovery_smart_truncation_top_n: int = 10
+    discovery_smart_truncation_summary_n: int = 20
+    discovery_total_budget_chars: int = 8000
+    discovery_fuzzy_threshold: float = 0.6
+
     # ── Checkpointing ──
     checkpoint_enabled: bool = True
     checkpoint_backend: str = "memory"  # "memory" | "sqlite" | "redis"
