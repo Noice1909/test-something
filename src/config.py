@@ -93,6 +93,10 @@ class Settings(BaseSettings):
     discovery_smart_truncation_summary_n: int = 20
     discovery_total_budget_chars: int = 8000
     discovery_fuzzy_threshold: float = 0.6
+    discovery_cross_tool_boost: float = 0.1
+    discovery_excluded_properties: str = "embedding,embedding_vector,vector,raw_embedding,raw_text,features"
+    discovery_deep_fuzzy_min_results: int = 3
+    discovery_levenshtein_short_max: int = 3  # terms <= this length use len as threshold
 
     # ── Checkpointing ──
     checkpoint_enabled: bool = True

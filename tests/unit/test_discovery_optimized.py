@@ -10,9 +10,11 @@ import pytest
 from src.agents.base import SpecialistResult
 from src.agents.specialists.discovery import (
     DiscoverySpecialist,
+    _build_deep_fuzzy_plan,
     _build_fuzzy_plan,
     _build_tool_plan,
     _extract_search_terms,
+    _levenshtein_threshold,
     _score_result,
     _smart_truncate,
 )
@@ -120,6 +122,65 @@ class TestBuildToolPlan:
         plan = _build_tool_plan(["term"], {}, [])
         assert plan == []
 
+    def test_property_targeted_when_label_in_terms(self):
+        """When a term matches a label name, property-targeted search is added."""
+        schema = {
+            "labels": ["Application", "Domain"],
+            "label_properties": {"Application": ["name", "id", "description"]},
+        }
+        tools = {
+            "search_nodes_by_property_case_insensitive": AsyncMock(),
+            "search_nodes_by_text": AsyncMock(),
+            "get_all_labels": AsyncMock(),
+        }
+        plan = _build_tool_plan(["Application", "CNAPP"], tools, [], schema=schema)
+        names = [name for name, _ in plan]
+        assert "search_nodes_by_property_case_insensitive" in names
+        # Verify the args target the Application label with name property
+        prop_calls = [(n, kw) for n, kw in plan if n == "search_nodes_by_property_case_insensitive"]
+        assert prop_calls[0][1]["label"] == "Application"
+        assert prop_calls[0][1]["key"] == "name"
+        assert prop_calls[0][1]["value"] == "CNAPP"
+
+    def test_case_insensitive_text_search_always_used(self):
+        """search_nodes_by_text (now case-insensitive) is always included as fallback."""
+        tools = {"search_nodes_by_text": AsyncMock(), "get_all_labels": AsyncMock()}
+        plan = _build_tool_plan(["CNAPP"], tools, [])
+        names = [name for name, _ in plan]
+        assert "search_nodes_by_text" in names
+
+    def test_schema_none_backward_compat(self):
+        """schema=None should still produce a valid plan."""
+        tools = {"search_nodes_by_text": AsyncMock(), "get_all_labels": AsyncMock()}
+        plan = _build_tool_plan(["term"], tools, [], schema=None)
+        names = [name for name, _ in plan]
+        assert "search_nodes_by_text" in names
+        assert "get_all_labels" in names
+
+    def test_fulltext_enhanced_fuzzy_added_for_long_terms(self):
+        """Enhanced fulltext with Lucene fuzzy is added for terms >= 4 chars."""
+        tools = {
+            "search_nodes_using_fulltext_index": AsyncMock(),
+            "search_nodes_using_fulltext_enhanced": AsyncMock(),
+            "get_all_labels": AsyncMock(),
+        }
+        indexes = [{"name": "idx1"}]
+        plan = _build_tool_plan(["CNAPP"], tools, indexes)  # 5 chars
+        names = [name for name, _ in plan]
+        assert "search_nodes_using_fulltext_enhanced" in names
+
+    def test_fulltext_enhanced_not_added_for_short_terms(self):
+        """Enhanced fulltext NOT added when all terms < 4 chars."""
+        tools = {
+            "search_nodes_using_fulltext_index": AsyncMock(),
+            "search_nodes_using_fulltext_enhanced": AsyncMock(),
+            "get_all_labels": AsyncMock(),
+        }
+        indexes = [{"name": "idx1"}]
+        plan = _build_tool_plan(["HK"], tools, indexes)  # 2 chars
+        names = [name for name, _ in plan]
+        assert "search_nodes_using_fulltext_enhanced" not in names
+
 
 # ── _build_fuzzy_plan ─────────────────────────────────────────────────────────
 
@@ -154,6 +215,70 @@ class TestBuildFuzzyPlan:
         assert "Application" in labels_used
 
 
+# ── _levenshtein_threshold ───────────────────────────────────────────────────
+
+
+class TestLevenshteinThreshold:
+
+    def test_short_term_threshold_equals_length(self):
+        assert _levenshtein_threshold("HK") == 2
+        assert _levenshtein_threshold("AB") == 2
+        assert _levenshtein_threshold("X") == 1
+        assert _levenshtein_threshold("ABC") == 3
+
+    def test_medium_term_threshold_is_2(self):
+        assert _levenshtein_threshold("CNAPP") == 2
+        assert _levenshtein_threshold("domain") == 2
+        assert _levenshtein_threshold("Finance") == 2
+
+    def test_long_term_threshold_is_3(self):
+        assert _levenshtein_threshold("Application") == 3
+        assert _levenshtein_threshold("something_very_long") == 3
+
+
+# ── _build_deep_fuzzy_plan ───────────────────────────────────────────────────
+
+
+class TestBuildDeepFuzzyPlan:
+
+    def test_uses_label_scoped_when_labels_available(self):
+        tools = {"fuzzy_search_label_properties": AsyncMock()}
+        plan = _build_deep_fuzzy_plan(["HK"], tools, labels=["Application", "Domain"])
+        assert len(plan) > 0
+        assert all(n == "fuzzy_search_label_properties" for n, _ in plan)
+
+    def test_falls_back_to_global_when_no_labels(self):
+        tools = {"fuzzy_search_all_properties": AsyncMock()}
+        plan = _build_deep_fuzzy_plan(["HK"], tools, labels=None)
+        assert len(plan) == 1
+        assert plan[0][0] == "fuzzy_search_all_properties"
+
+    def test_falls_back_to_global_when_empty_labels(self):
+        tools = {"fuzzy_search_all_properties": AsyncMock()}
+        plan = _build_deep_fuzzy_plan(["HK"], tools, labels=[])
+        assert len(plan) == 1
+        assert plan[0][0] == "fuzzy_search_all_properties"
+
+    def test_adaptive_threshold_short_term(self):
+        tools = {"fuzzy_search_all_properties": AsyncMock()}
+        plan = _build_deep_fuzzy_plan(["HK"], tools)
+        assert plan[0][1]["threshold"] == 2  # len("HK") = 2
+
+    def test_adaptive_threshold_long_term(self):
+        tools = {"fuzzy_search_all_properties": AsyncMock()}
+        plan = _build_deep_fuzzy_plan(["Application"], tools)
+        assert plan[0][1]["threshold"] == 3  # long term
+
+    def test_empty_when_no_tools(self):
+        plan = _build_deep_fuzzy_plan(["HK"], {})
+        assert plan == []
+
+    def test_limits_to_2_terms(self):
+        tools = {"fuzzy_search_all_properties": AsyncMock()}
+        plan = _build_deep_fuzzy_plan(["A", "B", "C", "D"], tools)
+        assert len(plan) == 2  # only first 2 terms
+
+
 # ── _score_result ─────────────────────────────────────────────────────────────
 
 
@@ -174,6 +299,31 @@ class TestScoreResult:
     def test_unknown_tool_default(self):
         result = {"id": "1"}
         assert _score_result(result, "get_all_labels") == 0.3
+
+    def test_levenshtein_distance_0_gives_1(self):
+        result = {"id": "1", "minDist": 0}
+        assert _score_result(result, "fuzzy_search_all_properties") == 1.0
+
+    def test_levenshtein_distance_1_gives_0_8(self):
+        result = {"id": "1", "minDist": 1}
+        assert _score_result(result, "fuzzy_search_all_properties") == 0.8
+
+    def test_levenshtein_distance_2_gives_0_6(self):
+        result = {"id": "1", "minDist": 2}
+        assert _score_result(result, "fuzzy_search_label_properties") == 0.6
+
+    def test_levenshtein_distance_high_floors_at_0_1(self):
+        result = {"id": "1", "minDist": 10}
+        assert _score_result(result, "fuzzy_search_all_properties") == 0.1
+
+    def test_property_targeted_score(self):
+        result = {"id": "1"}
+        assert _score_result(result, "search_nodes_by_property_case_insensitive") == 0.85
+        assert _score_result(result, "search_nodes_by_property") == 0.85
+
+    def test_prefix_search_score(self):
+        result = {"id": "1"}
+        assert _score_result(result, "search_nodes_by_text_prefix") == 0.7
 
 
 # ── _smart_truncate ───────────────────────────────────────────────────────────
@@ -234,8 +384,53 @@ class TestSmartTruncate:
         from src.agents.specialists.discovery import _TOTAL_BUDGET
         assert len(result) <= _TOTAL_BUDGET + 500  # small margin for last entry
 
+    def test_cross_tool_boost_same_entity(self):
+        """Entity found by multiple tools gets boosted score."""
+        tool_results = {
+            "tool_a": [{"id": "1", "labels": ["App"], "name": "X", "score": 0.7}],
+            "tool_b": [{"id": "1", "labels": ["App"], "name": "X", "score": 0.6}],
+            "tool_c": [{"id": "1", "labels": ["App"], "name": "X", "score": 0.5}],
+        }
+        result = _smart_truncate(tool_results)
+        # Node "1" found by 3 tools → boosted score = 0.7 + 0.1*(3-1) = 0.9
+        assert "score=0.90" in result
+
+    def test_boost_capped_at_1(self):
+        """Boosted score should never exceed 1.0."""
+        tool_results = {
+            f"tool_{i}": [{"id": "1", "labels": ["App"], "name": "X", "score": 0.95}]
+            for i in range(5)
+        }
+        result = _smart_truncate(tool_results)
+        # 0.95 + 0.1*4 = 1.35 → capped at 1.0
+        assert "score=1.00" in result
+
+    def test_single_tool_no_boost(self):
+        """Entity from only 1 tool gets no boost."""
+        tool_results = {
+            "tool_a": [{"id": "1", "labels": ["App"], "name": "X", "score": 0.7}],
+        }
+        result = _smart_truncate(tool_results)
+        # 0.7 + 0.1*(1-1) = 0.7 — no boost
+        assert "score=0.70" in result
+
 
 # ── DiscoverySpecialist ───────────────────────────────────────────────────────
+
+
+def _make_mock_db() -> AsyncMock:
+    """Create a mock DB with get_schema returning a basic schema."""
+    db = AsyncMock()
+    db.get_schema = AsyncMock(return_value={
+        "labels": ["Application", "Domain"],
+        "label_properties": {
+            "Application": ["name", "id", "description"],
+            "Domain": ["name", "type"],
+        },
+        "relationship_types": ["BELONGS_TO"],
+        "relationship_patterns": [],
+    })
+    return db
 
 
 class TestDiscoverySpecialist:
@@ -243,7 +438,7 @@ class TestDiscoverySpecialist:
     @pytest.mark.asyncio
     async def test_fulltext_index_caching(self):
         """Fulltext indexes should be fetched once and cached."""
-        db = AsyncMock()
+        db = _make_mock_db()
         llm = AsyncMock()
         call_count = 0
 
@@ -268,7 +463,7 @@ class TestDiscoverySpecialist:
     @pytest.mark.asyncio
     async def test_fulltext_index_missing_tool(self):
         """When get_fulltext_indexes tool is not available, return empty list."""
-        db = AsyncMock()
+        db = _make_mock_db()
         llm = AsyncMock()
         specialist = DiscoverySpecialist(db, llm, {})
 
@@ -278,7 +473,7 @@ class TestDiscoverySpecialist:
     @pytest.mark.asyncio
     async def test_fulltext_index_error_returns_empty(self):
         """When get_fulltext_indexes raises, cache empty list and move on."""
-        db = AsyncMock()
+        db = _make_mock_db()
         llm = AsyncMock()
 
         async def mock_fail(db_arg):
@@ -295,7 +490,7 @@ class TestDiscoverySpecialist:
     @pytest.mark.asyncio
     async def test_parallel_execution_merges_results(self):
         """_execute_parallel should run all tools and merge results."""
-        db = AsyncMock()
+        db = _make_mock_db()
         llm = AsyncMock()
 
         async def mock_search(db_arg, **kwargs):
@@ -323,7 +518,7 @@ class TestDiscoverySpecialist:
     @pytest.mark.asyncio
     async def test_parallel_execution_handles_tool_failure(self):
         """Failed tools should return empty list, not crash the pipeline."""
-        db = AsyncMock()
+        db = _make_mock_db()
         llm = AsyncMock()
 
         async def mock_fail(db_arg, **kwargs):
@@ -350,7 +545,7 @@ class TestDiscoverySpecialist:
     @pytest.mark.asyncio
     async def test_run_end_to_end(self):
         """Full run should: extract terms → select tools → parallel exec → LLM extract."""
-        db = AsyncMock()
+        db = _make_mock_db()
         llm = AsyncMock()
 
         # LLM returns entity extraction JSON
@@ -394,7 +589,7 @@ class TestDiscoverySpecialist:
     @pytest.mark.asyncio
     async def test_run_with_no_results(self):
         """When tools return nothing, run should still succeed with empty discoveries."""
-        db = AsyncMock()
+        db = _make_mock_db()
         llm = AsyncMock()
         llm.ainvoke = AsyncMock(return_value=MagicMock(
             content=json.dumps({"entities": []})
@@ -420,7 +615,7 @@ class TestDiscoverySpecialist:
     @pytest.mark.asyncio
     async def test_run_deduplicates_entities(self):
         """Entities with the same node_id should be deduplicated."""
-        db = AsyncMock()
+        db = _make_mock_db()
         llm = AsyncMock()
         llm.ainvoke = AsyncMock(return_value=MagicMock(
             content=json.dumps({
@@ -453,7 +648,7 @@ class TestDiscoverySpecialist:
     @pytest.mark.asyncio
     async def test_run_handles_llm_parse_failure(self):
         """When LLM returns invalid JSON, run should succeed with empty discoveries."""
-        db = AsyncMock()
+        db = _make_mock_db()
         llm = AsyncMock()
         llm.ainvoke = AsyncMock(return_value=MagicMock(content="not valid json at all"))
 
@@ -473,3 +668,76 @@ class TestDiscoverySpecialist:
         result = await specialist.run(state)
         assert result.success is True
         assert state.discoveries == []
+
+    @pytest.mark.asyncio
+    async def test_deep_fuzzy_triggered_when_sparse_results(self):
+        """Phase 2 deep fuzzy should trigger when Phase 1 has < 3 results."""
+        db = _make_mock_db()
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=MagicMock(
+            content=json.dumps({"entities": [
+                {"name": "HK", "label": "Application", "node_id": "210",
+                 "confidence": 0.9, "properties": {"name": "HK"}}
+            ]})
+        ))
+
+        # Phase 1 text search returns only 1 result (< 3 threshold)
+        async def mock_search(db_arg, **kwargs):
+            return [{"id": "210", "labels": ["Application"], "props": {"name": "HK"}}]
+
+        async def mock_labels(db_arg, **kwargs):
+            return ["Application"]
+
+        deep_fuzzy_called = False
+
+        async def mock_fuzzy_label(db_arg, **kwargs):
+            nonlocal deep_fuzzy_called
+            deep_fuzzy_called = True
+            return [{"id": "210", "labels": ["Application"],
+                     "props": {"name": "HK"}, "minDist": 0}]
+
+        tools = {
+            "search_nodes_by_text": mock_search,
+            "get_all_labels": mock_labels,
+            "fuzzy_search_label_properties": mock_fuzzy_label,
+        }
+        specialist = DiscoverySpecialist(db, llm, tools)
+        state = AgentState(question="find HK")
+
+        result = await specialist.run(state)
+        assert result.success is True
+        assert deep_fuzzy_called, "Deep fuzzy should have been triggered"
+
+    @pytest.mark.asyncio
+    async def test_deep_fuzzy_skipped_when_enough_results(self):
+        """Phase 2 deep fuzzy should NOT trigger when Phase 1 has >= 3 results."""
+        db = _make_mock_db()
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=MagicMock(
+            content=json.dumps({"entities": []})
+        ))
+
+        async def mock_search(db_arg, **kwargs):
+            # Return 5 results — more than the threshold
+            return [{"id": str(i), "labels": ["App"], "name": f"E{i}"} for i in range(5)]
+
+        async def mock_labels(db_arg, **kwargs):
+            return ["Application"]
+
+        deep_fuzzy_called = False
+
+        async def mock_fuzzy(db_arg, **kwargs):
+            nonlocal deep_fuzzy_called
+            deep_fuzzy_called = True
+            return []
+
+        tools = {
+            "search_nodes_by_text": mock_search,
+            "get_all_labels": mock_labels,
+            "fuzzy_search_label_properties": mock_fuzzy,
+        }
+        specialist = DiscoverySpecialist(db, llm, tools)
+        state = AgentState(question="find applications")
+
+        await specialist.run(state)
+        assert not deep_fuzzy_called, "Deep fuzzy should NOT have been triggered"

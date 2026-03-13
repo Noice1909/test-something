@@ -92,6 +92,9 @@ without any relationship traversal.
 11. When "Label Properties" lists the property the user is asking about, generate \
 a simple query like: MATCH (n:Label) WHERE n.name = $name RETURN n.property \
 LIMIT 1. Do NOT add unnecessary relationship traversals.
+12. When a discovered entity has an elementId, you MAY use it for an exact lookup: \
+MATCH (n) WHERE elementId(n) = $nodeId RETURN ... — this is the fastest possible query. \
+Use this when the question asks about a SPECIFIC discovered entity.
 
 Return a JSON object with:
 - "query": the Cypher query string
@@ -171,11 +174,15 @@ class QueryGenerationSpecialist:
                 or p["to"] in state.schema_selection.node_labels
             )[:500] or "None"
 
-            # Format discoveries
+            # Format discoveries (sorted by confidence, include elementId)
+            sorted_disc = sorted(
+                state.discoveries, key=lambda d: d.confidence, reverse=True
+            )[:10] if state.discoveries else []
             disc_text = "\n".join(
-                f"- {d.entity_name} (label={d.label}, id={d.node_id}, props={d.properties})"
-                for d in state.discoveries[:10]
-            ) if state.discoveries else "None"
+                f"- {d.entity_name} (label={d.label}, confidence={d.confidence:.2f}, "
+                f"elementId={d.node_id}, props={d.properties})"
+                for d in sorted_disc
+            ) if sorted_disc else "None"
 
             prompt = _GENERATION_PROMPT.format(
                 question=state.question,
