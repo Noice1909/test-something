@@ -428,6 +428,10 @@ class DiscoverySpecialist:
             self._fulltext_indexes = []
         return self._fulltext_indexes
 
+    async def _resolve_schema(self, state: AgentState) -> dict[str, Any]:
+        """Return cached schema from state, or fetch from DB."""
+        return state.schema or await self._db.get_schema()
+
     async def run(self, state: AgentState) -> SpecialistResult:
         t0 = time.time()
         try:
@@ -436,9 +440,11 @@ class DiscoverySpecialist:
             if not terms:
                 terms = [state.question[:50]]
 
-            # Fetch fulltext indexes (cached) and schema (cached)
-            ft_indexes = await self._get_fulltext_indexes()
-            schema = await self._db.get_schema()
+            # Fetch fulltext indexes and schema in parallel
+            ft_indexes, schema = await asyncio.gather(
+                self._get_fulltext_indexes(),
+                self._resolve_schema(state),
+            )
 
             # Phase 2: Build tool plan (schema-aware, priority-based)
             tool_plan = _build_tool_plan(terms, self._tools, ft_indexes, schema=schema)

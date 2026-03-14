@@ -198,8 +198,8 @@ class ReflectionSpecialist:
                 )
                 return SpecialistResult(success=True, data=reflection, duration_ms=dur)
 
-            # Fetch live schema for the LLM to reason about
-            schema = await self._db.get_schema()
+            # Use cached schema from state, or fetch if not available
+            schema = state.schema or await self._db.get_schema()
 
             patterns_text = "\n".join(
                 f"  ({p['from']})-[{p['type']}]->({p['to']})"

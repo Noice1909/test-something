@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     discovery_deep_fuzzy_min_results: int = 3
     discovery_levenshtein_short_max: int = 3  # terms <= this length use len as threshold
 
+    # ── Pipeline optimization ──
+    combine_schema_query: bool = True  # merge schema_planning + query_generation into 1 LLM call
+    format_answer_with_llm: bool = True  # set False to skip answer formatting LLM call
+
     # ── Checkpointing ──
     checkpoint_enabled: bool = True
     checkpoint_backend: str = "memory"  # "memory" | "sqlite" | "redis"

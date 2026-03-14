@@ -95,7 +95,7 @@ class SchemaPlanningSpecialist:
     async def run(self, state: AgentState) -> SpecialistResult:
         t0 = time.time()
         try:
-            schema = await self._db.get_schema()
+            schema = state.schema or await self._db.get_schema()
 
             disc_text = "\n".join(
                 f"- {d.entity_name} (label={d.label}, confidence={d.confidence:.2f})"

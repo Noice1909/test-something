@@ -24,6 +24,7 @@ from src.agents.specialists.query_planning import QueryPlanningSpecialist
 from src.agents.specialists.query_generation import QueryGenerationSpecialist
 from src.agents.specialists.execution import ExecutionSpecialist
 from src.agents.specialists.reflection import ReflectionSpecialist
+from src.agents.specialists.schema_query import SchemaQuerySpecialist
 from src.agents.utils import extract_text
 from src.agents.conversation import ConversationManager
 from src.cache.cache_manager import CacheManager
@@ -194,6 +195,23 @@ _EMPTY_RETRY_SEQUENCE: list[str] = [
     "schema_planning", "query_generation", "execution",
 ]
 
+# ── Combined sequences (schema_query replaces schema_planning + query_generation)
+_COMBINED_STRATEGY_SEQUENCES: dict[StrategyType, list[str]] = {
+    StrategyType.DISCOVERY_FIRST: ["discovery", "schema_query", "execution"],
+    StrategyType.DIRECT_QUERY: ["schema_query", "execution"],
+    StrategyType.SCHEMA_EXPLORATION: ["discovery", "schema_query", "execution"],
+    StrategyType.AGGREGATION: ["discovery", "schema_query", "execution"],
+    StrategyType.PROPERTY_LOOKUP: ["discovery", "schema_query", "execution"],
+    StrategyType.SIMPLE_COUNT: ["schema_query", "execution"],
+    StrategyType.LABEL_LIST: ["schema_query", "execution"],
+    StrategyType.ENTITY_DETAIL: ["discovery", "schema_query", "execution"],
+    StrategyType.RELATIONSHIP_QUERY: ["discovery", "schema_query", "execution"],
+    StrategyType.PATH_QUERY: ["discovery", "schema_query", "execution"],
+    StrategyType.COMPARISON: ["discovery", "schema_query", "execution"],
+}
+
+_COMBINED_EMPTY_RETRY_SEQUENCE: list[str] = ["schema_query", "execution"]
+
 
 class Supervisor:
     """LLM-based orchestrator that coordinates specialist agents."""
@@ -217,6 +235,7 @@ class Supervisor:
             "discovery": DiscoverySpecialist(db, llm, tools),
             "schema_planning": SchemaPlanningSpecialist(db, llm, tools),
             "query_generation": QueryGenerationSpecialist(db, llm, tools),
+            "schema_query": SchemaQuerySpecialist(db, llm, tools),
             "execution": ExecutionSpecialist(db, tools),
             "reflection": ReflectionSpecialist(db, llm, tools),
             # Keep old specialists for backward compat
@@ -276,7 +295,8 @@ class Supervisor:
                 logger.info("[%s] Retry attempt %d", state.trace_id, attempt)
 
             # 2) Execute specialist sequence
-            sequence = _STRATEGY_SEQUENCES.get(state.strategy, _STRATEGY_SEQUENCES[StrategyType.DISCOVERY_FIRST])
+            seq_map = _COMBINED_STRATEGY_SEQUENCES if settings.combine_schema_query else _STRATEGY_SEQUENCES
+            sequence = seq_map.get(state.strategy, seq_map[StrategyType.DISCOVERY_FIRST])
             success = await self._execute_sequence(state, sequence)
 
             # 3) Check results
@@ -412,7 +432,8 @@ class Supervisor:
             "[%s] Empty-result retry: %s",
             state.trace_id, state.reflection.next_approach[:80],
         )
-        success = await self._execute_sequence(state, _EMPTY_RETRY_SEQUENCE)
+        retry_seq = _COMBINED_EMPTY_RETRY_SEQUENCE if settings.combine_schema_query else _EMPTY_RETRY_SEQUENCE
+        success = await self._execute_sequence(state, retry_seq)
 
         if success and state.execution_result.success and state.execution_result.rows:
             answer = await self._format_answer(question, state.execution_result.rows)
@@ -511,6 +532,13 @@ class Supervisor:
     async def _execute_sequence(
         self, state: AgentState, sequence: list[str]
     ) -> bool:
+        # Pre-fetch schema once so all specialists share it
+        if state.schema is None:
+            try:
+                state.schema = await self._db.get_schema()
+            except Exception as exc:
+                logger.warning("Schema pre-fetch failed: %s", exc)
+
         for specialist_name in sequence:
             specialist = self._specialists.get(specialist_name)
             if not specialist:
@@ -528,6 +556,10 @@ class Supervisor:
         return True
 
     async def _format_answer(self, question: str, rows: list[dict]) -> str:
+        # Skip LLM call when format_answer_with_llm is disabled (saves ~8-12s)
+        if not settings.format_answer_with_llm:
+            return self._format_answer_raw(rows)
+
         results_text = json.dumps(rows[:20], indent=2, default=str)
         if len(results_text) > 3000:
             results_text = results_text[:3000] + "\n... (truncated)"
@@ -538,9 +570,17 @@ class Supervisor:
             return extract_text(response)
         except Exception as exc:
             logger.warning("Answer formatting failed: %s", exc)
-            return f"Found {len(rows)} results:\n" + "\n".join(
-                str(row) for row in rows[:10]
-            )
+            return self._format_answer_raw(rows)
+
+    @staticmethod
+    def _format_answer_raw(rows: list[dict]) -> str:
+        """Format answer without LLM — simple JSON summary."""
+        if not rows:
+            return "No matching data was found."
+        summary = json.dumps(rows[:20], indent=2, default=str)
+        if len(summary) > 3000:
+            summary = summary[:3000] + "\n... (truncated)"
+        return f"Found {len(rows)} result(s):\n{summary}"
 
     def _apply_retry_strategy(self, state: AgentState) -> None:
         strategy = state.reflection.retry_strategy

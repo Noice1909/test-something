@@ -51,6 +51,9 @@ class AgentState:
     empty_retries_used: int = 0
     previous_empty_queries: list[dict[str, str]] = field(default_factory=list)
 
+    # ── cached schema (fetched once, shared by all specialists) ──
+    schema: dict[str, Any] | None = None
+
     # ── conversation (multi-turn) ──
     conversation_id: str | None = None
     turn_number: int = 1

@@ -154,7 +154,7 @@ class QueryGenerationSpecialist:
     async def run(self, state: AgentState) -> SpecialistResult:
         t0 = time.time()
         try:
-            schema = await self._db.get_schema()
+            schema = state.schema or await self._db.get_schema()
 
             self._ensure_schema_context(state, schema)
 
