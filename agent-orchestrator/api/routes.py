@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Any
@@ -66,39 +65,29 @@ async def query(body: QueryRequest, request: Request) -> QueryResponse:
 
 @router.post("/query/stream")
 async def query_stream(body: QueryRequest, request: Request) -> EventSourceResponse:
-    """SSE streaming — yields events as the agent works."""
+    """SSE token-by-token streaming — yields events as the agent works.
+
+    Event types:
+      - token:      individual LLM output token
+      - tool_start: before a tool executes
+      - tool_end:   after a tool completes
+      - hook_skip:  a hook skipped a tool call
+      - hook_block: a hook blocked a tool call
+      - done:       final response with session info
+      - error:      something went wrong
+    """
     orchestrator = _get_orchestrator(request)
 
     async def event_generator():
-        queue: asyncio.Queue[dict | None] = asyncio.Queue()
-
-        async def on_event(event: dict) -> None:
-            await queue.put(event)
-
-        async def run_query():
-            try:
-                result = await orchestrator.handle_query(
-                    user_input=body.message,
-                    session_id=body.session_id,
-                    on_event=on_event,
-                )
-                await queue.put({"type": "done", **result})
-            except Exception as exc:
-                await queue.put({"type": "error", "message": str(exc)})
-            finally:
-                await queue.put(None)  # sentinel
-
-        task = asyncio.create_task(run_query())
-
         try:
-            while True:
-                event = await queue.get()
-                if event is None:
-                    break
+            async for event in orchestrator.handle_query_streaming(
+                user_input=body.message,
+                session_id=body.session_id,
+            ):
                 yield {"data": json.dumps(event)}
-        finally:
-            if not task.done():
-                task.cancel()
+        except Exception as exc:
+            logger.exception("Streaming query failed")
+            yield {"data": json.dumps({"type": "error", "message": str(exc)})}
 
     return EventSourceResponse(event_generator())
 
@@ -148,6 +137,9 @@ async def reload_skills(request: Request) -> ReloadResponse:
     """Hot-reload skills and agents from the filesystem."""
     registry = _get_registry(request)
     await registry.reload()
+    # Invalidate the orchestrator's prompt cache so new skills show up
+    orchestrator = _get_orchestrator(request)
+    orchestrator.invalidate_prompt_cache()
     return ReloadResponse(
         skills_loaded=len(registry.skills),
         agents_loaded=len(registry.agents),

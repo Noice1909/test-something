@@ -20,6 +20,7 @@ from neo4j import AsyncGraphDatabase
 
 from api.routes import router
 from config import Settings
+from core.hooks import HookManager, HookType, safety_write_blocker, tool_call_logger
 from core.orchestrator import Orchestrator
 from discovery.registry import CapabilityRegistry
 from tools.manager import ToolManager
@@ -61,6 +62,12 @@ def create_llm_factory(config: Settings):
 
         if config.llm_provider == "ollama":
             return ChatClass(model=model_name, base_url=config.llm_base_url, **kwargs)  # type: ignore[arg-type]
+        elif config.llm_provider == "anthropic" and config.enable_prompt_cache:
+            # Enable Anthropic prompt caching via beta header
+            kwargs["model_kwargs"] = {
+                "extra_headers": {"anthropic-beta": "prompt-caching-2024-07-31"}
+            }
+            return ChatClass(model=model_name, api_key=config.llm_api_key, **kwargs)  # type: ignore[arg-type]
         else:
             return ChatClass(model=model_name, api_key=config.llm_api_key, **kwargs)  # type: ignore[arg-type]
 
@@ -102,9 +109,17 @@ async def lifespan(app: FastAPI):
     tool_manager.register_neo4j_tools(driver, config.neo4j_database)
     await tool_manager.register_mcp_servers(config.mcp_servers)
 
-    # ── LLM factory + sub-agent spawner ──────────────────────────────────
+    # ── LLM factory ────────────────────────────────────────────────────────
     llm_factory = create_llm_factory(config)
-    spawner = SubAgentSpawner(llm_factory, tool_manager, registry)
+
+    # ── Hook manager ─────────────────────────────────────────────────────
+    hook_manager = HookManager()
+    hook_manager.register(HookType.PRE_TOOL_USE, safety_write_blocker, priority=0, name="safety_write_blocker")
+    hook_manager.register(HookType.PRE_TOOL_USE, tool_call_logger, priority=10, name="tool_call_logger")
+    logger.info("Registered %d hooks", sum(len(v) for v in hook_manager._hooks.values()))
+
+    # ── Sub-agent spawner (with hooks) ───────────────────────────────────
+    spawner = SubAgentSpawner(llm_factory, tool_manager, registry, hook_manager=hook_manager)
 
     # ── Register orchestration meta-tools ────────────────────────────────
     tool_manager.register(InvokeSkillTool(registry=registry, spawner=spawner))
@@ -112,14 +127,15 @@ async def lifespan(app: FastAPI):
 
     logger.info("Registered %d tools total", len(tool_manager.tool_names))
 
-    # ── Create orchestrator ──────────────────────────────────────────────
-    orchestrator = Orchestrator(llm_factory, registry, tool_manager, config)
+    # ── Create orchestrator (with hooks) ─────────────────────────────────
+    orchestrator = Orchestrator(llm_factory, registry, tool_manager, config, hook_manager=hook_manager)
 
     # Store in app state for routes to access
     app.state.orchestrator = orchestrator
     app.state.registry = registry
     app.state.driver = driver
     app.state.config = config
+    app.state.hook_manager = hook_manager
 
     yield
 

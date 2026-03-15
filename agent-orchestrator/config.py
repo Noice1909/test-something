@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     mcp_servers: dict[str, dict] = {}
     # Example: {"neo4j": {"command": "python", "args": ["mcp_neo4j.py"]}}
 
+    # ── Hooks ─────────────────────────────────────────────────────────────────
+    hooks_dir: str = ".hooks"  # directory for hook scripts (future: file-based hooks)
+
+    # ── Prompt Caching ────────────────────────────────────────────────────────
+    enable_prompt_cache: bool = True  # cache system prompt + Anthropic cache_control
+
     # ── Server ───────────────────────────────────────────────────────────────
     host: str = "0.0.0.0"
     port: int = 8000

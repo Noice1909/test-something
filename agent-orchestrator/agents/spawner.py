@@ -8,6 +8,7 @@ from typing import Any, Callable
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
+from core.hooks import HookManager
 from core.loop import run_agent_loop
 from core.types import AgentConfig, SkillConfig
 
@@ -22,6 +23,7 @@ class SubAgentSpawner:
       - Its own system prompt (from AGENT.md body)
       - A filtered set of tools (per agent config)
       - Optionally a different LLM model
+      - The parent's hook manager (hooks run on sub-agents too)
 
     Only the final text response returns to the parent.
     """
@@ -31,10 +33,12 @@ class SubAgentSpawner:
         llm_factory: Callable[..., BaseChatModel],
         tool_manager: Any,  # tools.manager.ToolManager — avoid circular import
         registry: Any,  # discovery.registry.CapabilityRegistry
+        hook_manager: HookManager | None = None,
     ) -> None:
         self._llm_factory = llm_factory
         self._tool_manager = tool_manager
         self._registry = registry
+        self._hook_manager = hook_manager
 
     async def spawn(self, agent_config: AgentConfig, prompt: str) -> str:
         """Spawn a sub-agent from an ``AgentConfig`` (AGENT.md).
@@ -78,6 +82,7 @@ class SubAgentSpawner:
             messages=messages,
             tools=tools,
             max_turns=agent_config.max_turns,
+            hook_manager=self._hook_manager,
         )
 
         logger.info("Sub-agent '%s' completed", agent_config.name)
@@ -103,6 +108,7 @@ class SubAgentSpawner:
             messages=messages,
             tools=tools,
             max_turns=30,
+            hook_manager=self._hook_manager,
         )
 
         logger.info("Skill-fork '%s' completed", skill.name)

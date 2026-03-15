@@ -87,18 +87,109 @@ def _serialise(records: list[dict]) -> str:
     return json.dumps(converted, indent=2, default=str)
 
 
+import re as _re
+
+# Every Neo4j Cypher clause / command that mutates data, schema, or admin state.
+# Organised by category for auditability.
+_WRITE_KEYWORDS = (
+    # ── Data Manipulation (DML) ──────────────────────────────────────────
+    "CREATE ",          # CREATE (n), CREATE (a)-[r]->(b)
+    "MERGE ",           # MERGE (n), MERGE (a)-[r]->(b)
+    "DELETE ",          # DELETE n
+    "DETACH DELETE ",   # DETACH DELETE n  (delete node + all rels)
+    "DETACH ",          # catch-all for DETACH
+    "SET ",             # SET n.prop = val, SET n:Label
+    "REMOVE ",          # REMOVE n.prop, REMOVE n:Label
+    "FOREACH ",         # FOREACH (x IN list | CREATE ...)
+    "FOREACH(",         # FOREACH(x IN list | ...)
+
+    # ── Schema / Index / Constraint ──────────────────────────────────────
+    "CREATE INDEX ",          # CREATE INDEX FOR (n:Label) ON (n.prop)
+    "CREATE INDEX(",          # CREATE INDEX ...
+    "DROP INDEX ",            # DROP INDEX name
+    "CREATE CONSTRAINT ",     # CREATE CONSTRAINT FOR (n:Label) ...
+    "DROP CONSTRAINT ",       # DROP CONSTRAINT name
+    "CREATE FULLTEXT INDEX ", # CREATE FULLTEXT INDEX ...
+    "CREATE LOOKUP INDEX ",   # CREATE LOOKUP INDEX ...
+    "CREATE POINT INDEX ",    # CREATE POINT INDEX ...
+    "CREATE RANGE INDEX ",    # CREATE RANGE INDEX ...
+    "CREATE TEXT INDEX ",     # CREATE TEXT INDEX ...
+    "CREATE OR REPLACE ",     # CREATE OR REPLACE alias/index
+
+    # ── Admin / Database ─────────────────────────────────────────────────
+    "CREATE DATABASE ",       # CREATE DATABASE name
+    "DROP DATABASE ",         # DROP DATABASE name
+    "ALTER DATABASE ",        # ALTER DATABASE name SET ...
+    "START DATABASE ",        # START DATABASE name
+    "STOP DATABASE ",         # STOP DATABASE name
+    "CREATE COMPOSITE DATABASE ", # CREATE COMPOSITE DATABASE ...
+    "CREATE ALIAS ",          # CREATE ALIAS name FOR DATABASE ...
+    "DROP ALIAS ",            # DROP ALIAS name
+    "ALTER ALIAS ",           # ALTER ALIAS name ...
+
+    # ── Security / Users / Roles ─────────────────────────────────────────
+    "CREATE USER ",           # CREATE USER name ...
+    "DROP USER ",             # DROP USER name
+    "ALTER USER ",            # ALTER USER name SET PASSWORD ...
+    "CREATE ROLE ",           # CREATE ROLE name
+    "DROP ROLE ",             # DROP ROLE name
+    "RENAME ",                # RENAME ROLE/USER/DATABASE
+    "GRANT ",                 # GRANT privilege TO role
+    "DENY ",                  # DENY privilege TO role
+    "REVOKE ",                # REVOKE privilege FROM role
+
+    # ── Server / Cluster ─────────────────────────────────────────────────
+    "ALTER SERVER ",          # ALTER SERVER name SET ...
+    "ENABLE SERVER ",         # ENABLE SERVER name
+    "DEALLOCATE ",            # DEALLOCATE DATABASES FROM SERVER
+    "REALLOCATE ",            # REALLOCATE DATABASES
+    "TERMINATE ",             # TERMINATE TRANSACTION(S)
+
+    # ── Bulk Import ──────────────────────────────────────────────────────
+    "LOAD CSV ",              # LOAD CSV WITH HEADERS FROM ...
+    "LOAD CSV(",              # LOAD CSV(...)
+
+    # ── Subquery writes / batching ───────────────────────────────────────
+    "CALL {",                 # CALL { CREATE ... }  (subquery writes)
+    " IN TRANSACTIONS",       # ... IN TRANSACTIONS  (batched writes)
+)
+
+
+def _normalise_query(query: str) -> str:
+    """Upper-case + collapse all whitespace to single spaces.
+
+    Prevents bypasses like ``CREATE\\n(n)`` where a newline replaces a space.
+    """
+    return _re.sub(r"\s+", " ", query.upper().strip())
+
+
+def _assert_readonly(query: str) -> None:
+    """Raise ValueError if the query contains any write operation."""
+    normalised = _normalise_query(query)
+    for kw in _WRITE_KEYWORDS:
+        if kw in normalised:
+            raise ValueError(
+                f"BLOCKED: Write operation '{kw.strip()}' detected. "
+                f"This system is strictly READ-ONLY — no data modifications allowed."
+            )
+
+
 async def _run_readonly(driver: AsyncDriver, query: str, params: dict | None = None, database: str = "neo4j") -> list[dict]:
-    """Execute a read-only Cypher query and return records as dicts."""
-    # Safety check — reject write operations
-    upper = query.upper().strip()
-    write_keywords = ("CREATE ", "MERGE ", "DELETE ", "DETACH ", "SET ", "REMOVE ", "DROP ", "CALL {")
-    for kw in write_keywords:
-        if kw in upper:
-            raise ValueError(f"Write operation detected ({kw.strip()}). Only read queries are allowed.")
+    """Execute a read-only Cypher query and return records as dicts.
+
+    Enforced at TWO levels:
+      1. Keyword scanning — rejects queries containing write operations
+      2. Neo4j driver execute_read() — the server itself rejects writes
+    """
+    _assert_readonly(query)
 
     async with driver.session(database=database) as session:
-        result = await session.run(query, params or {})
-        return [dict(record) async for record in result]
+
+        async def _read_tx(tx):
+            result = await tx.run(query, params or {})
+            return [dict(record) async for record in result]
+
+        return await session.execute_read(_read_tx)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
